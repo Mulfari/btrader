@@ -1,7 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import * as otplib from 'otplib';
 import { createClient } from '@supabase/supabase-js';
 import * as qrcode from 'qrcode';
+
+// Configurar el autenticador TOTP con opciones más seguras
+otplib.authenticator.options = {
+  window: 1, // Permite una ventana de ±30 segundos
+  step: 30, // Tiempo de validez del token en segundos
+  digits: 6 // Longitud del token
+};
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -11,30 +18,169 @@ const supabase = createClient(
 @Injectable()
 export class TwoFAService {
   async generateSecret(userId: string) {
-    const secret = otplib.authenticator.generateSecret();
-    const otpauth = otplib.authenticator.keyuri(userId, 'EdgeTrader', secret);
-    const qr = await qrcode.toDataURL(otpauth);
-    await supabase
-      .from('profiles')
-      .update({ totp_secret: secret, is_2fa_enabled: false })
-      .eq('id', userId);
-    return { secret, otpauth, qr };
+    try {
+      // Validar el userId
+      if (!userId) {
+        throw new BadRequestException('ID de usuario no proporcionado');
+      }
+
+      // Verificar si el usuario existe
+      const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
+      if (userError || !userData?.user) {
+        throw new BadRequestException('Usuario no encontrado');
+      }
+
+      // Verificar si ya tiene 2FA habilitado
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('is_2fa_enabled')
+        .eq('id', userId)
+        .single();
+
+      if (profileError) {
+        throw new BadRequestException('Error al verificar el perfil del usuario');
+      }
+
+      if (profile?.is_2fa_enabled) {
+        throw new BadRequestException('El 2FA ya está habilitado para este usuario');
+      }
+
+      // Generar un nuevo secreto
+      const secret = otplib.authenticator.generateSecret();
+      
+      // Generar la URL para el código QR
+      const otpauth = otplib.authenticator.keyuri(
+        userData.user.email || userId,
+        'EdgeTrader',
+        secret
+      );
+
+      // Generar el código QR
+      const qr = await qrcode.toDataURL(otpauth);
+
+      // Guardar el secreto en el perfil
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          totp_secret: secret,
+          is_2fa_enabled: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        throw new BadRequestException('Error al guardar el secreto TOTP');
+      }
+
+      return {
+        success: true,
+        secret,
+        qr,
+        error: null
+      };
+    } catch (error: any) {
+      console.error('Error en generateSecret:', error);
+      return {
+        success: false,
+        secret: null,
+        qr: null,
+        error: error.message || 'Error al generar el secreto TOTP'
+      };
+    }
   }
 
-  async verifyCode(userId: string, code: string) {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('totp_secret')
-      .eq('id', userId)
-      .single();
-    if (error || !data?.totp_secret) return { success: false, error: 'No secret' };
-    const valid = otplib.authenticator.check(code, data.totp_secret);
-    if (valid) {
-      await supabase
+  async verifyCode(userId: string, token: string) {
+    try {
+      // Validar el formato del token
+      if (!token || !/^\d{6}$/.test(token)) {
+        throw new BadRequestException('Formato de token inválido');
+      }
+
+      // Obtener el perfil del usuario con el secreto TOTP
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
-        .update({ is_2fa_enabled: true })
-        .eq('id', userId);
+        .select('totp_secret, is_2fa_enabled')
+        .eq('id', userId)
+        .single();
+
+      if (profileError || !profile) {
+        throw new BadRequestException('Error al obtener el perfil del usuario');
+      }
+
+      if (!profile.totp_secret) {
+        throw new BadRequestException('No se encontró el secreto TOTP');
+      }
+
+      // Verificar el token
+      const isValid = otplib.authenticator.verify({
+        token,
+        secret: profile.totp_secret
+      });
+
+      if (!isValid) {
+        throw new UnauthorizedException('Código inválido');
+      }
+
+      // Si el token es válido y 2FA no está habilitado, activarlo
+      if (!profile.is_2fa_enabled) {
+        const { error: updateError } = await supabase
+          .from('profiles')
+          .update({
+            is_2fa_enabled: true,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', userId);
+
+        if (updateError) {
+          throw new BadRequestException('Error al activar 2FA');
+        }
+      }
+
+      return {
+        success: true,
+        error: null
+      };
+    } catch (error: any) {
+      console.error('Error en verifyCode:', error);
+      return {
+        success: false,
+        error: error.message || 'Error al verificar el código'
+      };
     }
-    return { success: valid };
+  }
+
+  async disable2FA(userId: string, token: string) {
+    try {
+      // Verificar el código primero
+      const verifyResult = await this.verifyCode(userId, token);
+      if (!verifyResult.success) {
+        throw new UnauthorizedException(verifyResult.error || 'Código inválido');
+      }
+
+      // Desactivar 2FA
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          is_2fa_enabled: false,
+          totp_secret: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        throw new BadRequestException('Error al desactivar 2FA');
+      }
+
+      return {
+        success: true,
+        error: null
+      };
+    } catch (error: any) {
+      console.error('Error en disable2FA:', error);
+      return {
+        success: false,
+        error: error.message || 'Error al desactivar 2FA'
+      };
+    }
   }
 }
