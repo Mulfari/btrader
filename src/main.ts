@@ -10,11 +10,20 @@ async function bootstrap() {
         'https://bedgetrader-production.up.railway.app'
       ],
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
+      allowedHeaders: [
+        'Content-Type', 
+        'Accept', 
+        'Authorization', 
+        'X-Requested-With',
+        'Origin',
+        'Access-Control-Request-Method',
+        'Access-Control-Request-Headers'
+      ],
+      exposedHeaders: ['Authorization', 'Content-Length'],
       credentials: true,
       optionsSuccessStatus: 204,
       preflightContinue: false,
-      exposedHeaders: ['Authorization']
+      maxAge: 3600 // Cache preflight requests for 1 hour
     }
   });
 
