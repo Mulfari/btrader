@@ -12,13 +12,18 @@ authenticator.options = {
 
 const APP_NAME = 'EdgeTrader';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
 @Injectable()
 export class TwoFAService {
+  private readonly supabaseClient: any;
+
+  constructor() {
+    // Inicializar el cliente Supabase una sola vez
+    this.supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+  }
+
   /**
    * Genera un nuevo secreto TOTP para un usuario
    */
@@ -30,23 +35,16 @@ export class TwoFAService {
         throw new BadRequestException('ID de usuario no proporcionado');
       }
 
-      // Verificar estado actual del 2FA
       const profile = await this.getUserProfile(userId);
       
-      if (!profile) {
-        throw new BadRequestException('No se encontró el perfil del usuario');
-      }
-
       if (profile.is_2fa_enabled) {
         throw new BadRequestException('El 2FA ya está habilitado para este usuario');
       }
 
-      // Generar nuevo secreto
       const secret = authenticator.generateSecret();
-      const otpAuthUrl = this.generateOtpAuthUrl(userId, secret);
+      const otpAuthUrl = authenticator.keyuri(userId, APP_NAME, secret);
       const qrCodeUrl = await qrcode.toDataURL(otpAuthUrl);
 
-      // Guardar el secreto
       await this.updateProfile(userId, {
         totp_secret: secret,
         is_2fa_enabled: false
@@ -158,7 +156,7 @@ export class TwoFAService {
       throw new BadRequestException('ID de usuario no proporcionado');
     }
 
-    const { data: profile, error } = await supabase
+    const { data: profile, error } = await this.supabaseClient
       .from('profiles')
       .select('is_2fa_enabled, totp_secret')
       .eq('id', userId)
@@ -191,7 +189,7 @@ export class TwoFAService {
     totp_secret: string | null,
     is_2fa_enabled: boolean
   }>) {
-    const { error } = await supabase
+    const { error } = await this.supabaseClient
       .from('profiles')
       .update({
         ...updates,
@@ -211,7 +209,7 @@ export class TwoFAService {
     ip?: string,
     userAgent?: string
   ) {
-    await supabase
+    await this.supabaseClient
       .from('totp_verification_logs')
       .insert({
         user_id: userId,
@@ -222,11 +220,7 @@ export class TwoFAService {
       });
   }
 
-  private generateOtpAuthUrl(userId: string, secret: string): string {
-    return authenticator.keyuri(userId, APP_NAME, secret);
-  }
-
   private isValidTokenFormat(token: string): boolean {
-    return Boolean(token && /^\d{6}$/.test(token));
+    return /^\d{6}$/.test(token);
   }
 }
