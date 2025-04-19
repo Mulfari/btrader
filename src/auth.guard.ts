@@ -12,7 +12,7 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
 
-    // Permitir peticiones preflight OPTIONS
+    // Permitir siempre peticiones preflight OPTIONS para CORS
     if (request.method === 'OPTIONS') {
       return true;
     }
@@ -20,21 +20,30 @@ export class AuthGuard implements CanActivate {
     const token = this.extractTokenFromHeader(request);
     
     if (!token) {
-      throw new UnauthorizedException('Token no proporcionado');
+      throw new UnauthorizedException({
+        message: 'Token no proporcionado',
+        error: 'No se encontró el token Bearer en el header Authorization'
+      });
     }
 
     try {
       const { data: { user }, error } = await supabase.auth.getUser(token);
       
       if (error || !user) {
-        throw new UnauthorizedException('Token inválido');
+        throw new UnauthorizedException({
+          message: 'Token inválido',
+          error: error?.message || 'No se pudo validar el token con Supabase'
+        });
       }
 
       // Agregar el usuario a la request para uso posterior
       request['user'] = user;
       return true;
-    } catch (error) {
-      throw new UnauthorizedException('Error al validar el token');
+    } catch (error: any) {
+      throw new UnauthorizedException({
+        message: 'Error al validar el token',
+        error: error?.message || 'Error interno al validar el token'
+      });
     }
   }
 

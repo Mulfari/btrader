@@ -19,10 +19,15 @@ async function bootstrap() {
       'X-Requested-With',
       'Origin',
       'Access-Control-Request-Method',
-      'Access-Control-Request-Headers'
+      'Access-Control-Request-Headers',
+      'Access-Control-Allow-Origin',
+      'Access-Control-Allow-Methods',
+      'Access-Control-Allow-Headers'
     ],
     exposedHeaders: ['Authorization', 'Content-Length'],
     credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
     maxAge: 3600
   });
 
