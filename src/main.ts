@@ -13,7 +13,8 @@ async function bootstrap() {
       allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
       credentials: true,
       optionsSuccessStatus: 204,
-      preflightContinue: false
+      preflightContinue: false,
+      exposedHeaders: ['Authorization']
     }
   });
 
