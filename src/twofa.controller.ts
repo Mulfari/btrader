@@ -1,7 +1,8 @@
-import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Req, InternalServerErrorException } from '@nestjs/common';
 import { TwoFAService } from './twofa.service';
 import { AuthGuard } from './auth.guard';
 import { Request } from 'express';
+import { CheckStatusDto } from './2fa/dto/check-status.dto';
 
 @Controller('2fa')
 @UseGuards(AuthGuard)
@@ -38,19 +39,12 @@ export class TwoFAController {
   }
 
   @Post('status')
-  async check2FAStatus(@Body('userId') userId: string) {
+  async check2FAStatus(@Body() { userId }: CheckStatusDto) {
     try {
       const profile = await this.twoFAService.getUserProfile(userId);
-      return {
-        is2FAEnabled: profile.is_2fa_enabled || false,
-        error: null
-      };
-    } catch (error: any) {
-      console.error('Error al verificar estado de 2FA:', error);
-      return {
-        is2FAEnabled: false,
-        error: error.message || 'Error al verificar estado de 2FA'
-      };
+      return { is2FAEnabled: profile.is_2fa_enabled };
+    } catch {
+      throw new InternalServerErrorException('No se pudo obtener el estado de 2FA');
     }
   }
 }
