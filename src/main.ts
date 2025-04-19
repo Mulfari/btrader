@@ -6,17 +6,31 @@ async function bootstrap() {
   
   // Configurar CORS
   app.enableCors({
-    origin: [
-      'http://localhost:3000',           // Frontend en desarrollo
-      'https://bedgetrader.vercel.app',  // Frontend en producción
-      'https://bedgetrader-production.up.railway.app', // Frontend en producción (alternativo)
-      'https://bedgetrader-production.up.railway.app/api' // URL base de la API
-    ],
+    origin: function (origin, callback) {
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'https://bedgetrader.vercel.app',
+        'https://bedgetrader-production.up.railway.app'
+      ];
+      
+      // Permitir solicitudes sin origen (como las llamadas desde Postman)
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      // Verificar si el origen está en la lista de permitidos
+      if (allowedOrigins.some(allowedOrigin => origin.startsWith(allowedOrigin))) {
+        callback(null, true);
+      } else {
+        callback(new Error('No permitido por CORS'));
+      }
+    },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
     credentials: true,
-    exposedHeaders: ['Content-Length', 'Content-Type'],
-    maxAge: 3600
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   });
 
   await app.listen(process.env.PORT ?? 8000);
