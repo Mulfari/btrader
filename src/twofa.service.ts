@@ -17,65 +17,20 @@ const supabase = createClient(
 
 @Injectable()
 export class TwoFAService {
-  async generateSecret(userId: string) {
+  async generateSecret(userId: string, clientIp?: string, userAgent?: string) {
     try {
-      // Validar el userId
-      if (!userId) {
-        throw new BadRequestException('ID de usuario no proporcionado');
-      }
+      // Llamar a la función RPC para generar el secreto
+      const { data, error } = await supabase
+        .rpc('generate_totp_secret');
 
-      // Verificar si el usuario existe
-      const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
-      if (userError || !userData?.user) {
-        throw new BadRequestException('Usuario no encontrado');
-      }
-
-      // Verificar si ya tiene 2FA habilitado
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('is_2fa_enabled')
-        .eq('id', userId)
-        .single();
-
-      if (profileError) {
-        throw new BadRequestException('Error al verificar el perfil del usuario');
-      }
-
-      if (profile?.is_2fa_enabled) {
-        throw new BadRequestException('El 2FA ya está habilitado para este usuario');
-      }
-
-      // Generar un nuevo secreto
-      const secret = otplib.authenticator.generateSecret();
-      
-      // Generar la URL para el código QR
-      const otpauth = otplib.authenticator.keyuri(
-        userData.user.email || userId,
-        'EdgeTrader',
-        secret
-      );
-
-      // Generar el código QR
-      const qr = await qrcode.toDataURL(otpauth);
-
-      // Guardar el secreto en el perfil
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          totp_secret: secret,
-          is_2fa_enabled: false,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId);
-
-      if (updateError) {
-        throw new BadRequestException('Error al guardar el secreto TOTP');
+      if (error) {
+        throw new BadRequestException(error.message);
       }
 
       return {
-        success: true,
-        secret,
-        qr,
+        success: data.success,
+        secret: data.secret,
+        qr: data.qr_code,
         error: null
       };
     } catch (error: any) {
@@ -89,51 +44,68 @@ export class TwoFAService {
     }
   }
 
-  async verifyCode(userId: string, token: string) {
+  async verifyCode(userId: string, token: string, clientIp?: string, userAgent?: string) {
     try {
       // Validar el formato del token
       if (!token || !/^\d{6}$/.test(token)) {
         throw new BadRequestException('Formato de token inválido');
       }
 
-      // Obtener el perfil del usuario con el secreto TOTP
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('totp_secret, is_2fa_enabled')
-        .eq('id', userId)
-        .single();
+      // Obtener el secreto del usuario usando la función RPC
+      const { data, error } = await supabase
+        .rpc('verify_totp', { token });
 
-      if (profileError || !profile) {
-        throw new BadRequestException('Error al obtener el perfil del usuario');
+      if (error) {
+        throw new BadRequestException(error.message);
       }
 
-      if (!profile.totp_secret) {
-        throw new BadRequestException('No se encontró el secreto TOTP');
+      if (!data.success) {
+        throw new BadRequestException(data.error);
       }
 
-      // Verificar el token
+      // Verificar el token usando otplib
       const isValid = otplib.authenticator.verify({
         token,
-        secret: profile.totp_secret
+        secret: data.secret
       });
 
       if (!isValid) {
+        // Registrar el intento fallido
+        await supabase
+          .from('totp_verification_logs')
+          .insert({
+            user_id: userId,
+            verification_type: 'verify',
+            success: false,
+            ip_address: clientIp,
+            user_agent: userAgent
+          });
+
         throw new UnauthorizedException('Código inválido');
       }
 
-      // Si el token es válido y 2FA no está habilitado, activarlo
-      if (!profile.is_2fa_enabled) {
-        const { error: updateError } = await supabase
-          .from('profiles')
-          .update({
-            is_2fa_enabled: true,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', userId);
+      // Registrar el intento exitoso
+      await supabase
+        .from('totp_verification_logs')
+        .insert({
+          user_id: userId,
+          verification_type: 'verify',
+          success: true,
+          ip_address: clientIp,
+          user_agent: userAgent
+        });
 
-        if (updateError) {
-          throw new BadRequestException('Error al activar 2FA');
-        }
+      // Si el token es válido, activar 2FA si no está activado
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          is_2fa_enabled: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (updateError) {
+        throw new BadRequestException('Error al activar 2FA');
       }
 
       return {
@@ -149,27 +121,32 @@ export class TwoFAService {
     }
   }
 
-  async disable2FA(userId: string, token: string) {
+  async disable2FA(userId: string, token: string, clientIp?: string, userAgent?: string) {
     try {
       // Verificar el código primero
-      const verifyResult = await this.verifyCode(userId, token);
+      const verifyResult = await this.verifyCode(userId, token, clientIp, userAgent);
       if (!verifyResult.success) {
         throw new UnauthorizedException(verifyResult.error || 'Código inválido');
       }
 
-      // Desactivar 2FA
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          is_2fa_enabled: false,
-          totp_secret: null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId);
+      // Llamar a la función RPC para deshabilitar 2FA
+      const { data, error } = await supabase
+        .rpc('disable_totp', { token });
 
-      if (updateError) {
-        throw new BadRequestException('Error al desactivar 2FA');
+      if (error) {
+        throw new BadRequestException(error.message);
       }
+
+      // Registrar la desactivación
+      await supabase
+        .from('totp_verification_logs')
+        .insert({
+          user_id: userId,
+          verification_type: 'disable',
+          success: true,
+          ip_address: clientIp,
+          user_agent: userAgent
+        });
 
       return {
         success: true,
