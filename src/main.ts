@@ -10,7 +10,8 @@ async function bootstrap() {
       const allowedOrigins = [
         'http://localhost:3000',
         'https://bedgetrader.vercel.app',
-        'https://bedgetrader-production.up.railway.app'
+        'https://bedgetrader-production.up.railway.app',
+        'https://yavnrenkpriwsstqdfyp.supabase.co'  // Supabase URL
       ];
       
       // Permitir solicitudes sin origen (como las llamadas desde Postman)
