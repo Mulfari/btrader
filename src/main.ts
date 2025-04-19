@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // 1) Habilitar CORS antes de cualquier otra configuración
+  // 1) Primero habilitamos CORS
   app.enableCors({
     origin: [
       'http://localhost:3000',
@@ -26,7 +26,7 @@ async function bootstrap() {
     maxAge: 3600
   });
 
-  // 2) Establecer el prefijo global para todas las rutas API
+  // 2) Luego montamos el prefijo "api"
   app.setGlobalPrefix('api');
 
   await app.listen(process.env.PORT ?? 8000);
