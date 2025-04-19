@@ -6,7 +6,8 @@ async function bootstrap() {
     cors: {
       origin: [
         'http://localhost:3000',
-        'https://trader.mulfex.com'
+        'https://trader.mulfex.com',
+        'https://bedgetrader-production.up.railway.app'
       ],
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
