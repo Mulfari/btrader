@@ -12,11 +12,12 @@ async function bootstrap() {
       'https://bedgetrader-production.up.railway.app'
     ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
     exposedHeaders: ['Authorization'],
     credentials: true,
     maxAge: 86400,
-    preflightContinue: false
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   };
 
   // Aplicar CORS antes de cualquier ruta
