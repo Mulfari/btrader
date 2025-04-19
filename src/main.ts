@@ -2,36 +2,18 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  
-  // Configurar CORS
-  app.enableCors({
-    origin: function (origin, callback) {
-      const allowedOrigins = [
+  const app = await NestFactory.create(AppModule, {
+    cors: {
+      origin: [
         'http://localhost:3000',
-        'https://bedgetrader.vercel.app',
-        'https://bedgetrader-production.up.railway.app',
-        'https://yavnrenkpriwsstqdfyp.supabase.co'  // Supabase URL
-      ];
-      
-      // Permitir solicitudes sin origen (como las llamadas desde Postman)
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-
-      // Verificar si el origen está en la lista de permitidos
-      if (allowedOrigins.some(allowedOrigin => origin.startsWith(allowedOrigin))) {
-        callback(null, true);
-      } else {
-        callback(new Error('No permitido por CORS'));
-      }
-    },
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204
+        'https://trader.mulfex.com'
+      ],
+      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
+      credentials: true,
+      optionsSuccessStatus: 204,
+      preflightContinue: false
+    }
   });
 
   await app.listen(process.env.PORT ?? 8000);
