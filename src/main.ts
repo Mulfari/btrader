@@ -12,26 +12,14 @@ async function bootstrap() {
       'https://bedgetrader-production.up.railway.app'
     ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Accept',
-      'Authorization',
-      'X-Requested-With',
-      'Origin',
-      'Access-Control-Request-Method',
-      'Access-Control-Request-Headers'
-    ],
-    exposedHeaders: ['Authorization', 'Content-Length'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Authorization'],
     credentials: true,
-    maxAge: 3600,
-    optionsSuccessStatus: 204,
+    maxAge: 86400,
     preflightContinue: false
   };
 
-  // Aplicar middleware CORS de Express antes de cualquier ruta
-  app.use(cors(corsOptions));
-
-  // Habilitar CORS también para NestJS
+  // Aplicar CORS antes de cualquier ruta
   app.enableCors(corsOptions);
 
   // Configurar prefijo global
