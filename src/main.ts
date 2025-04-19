@@ -1,11 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import * as cors from 'cors';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // 1) Primero habilitamos CORS
-  app.enableCors({
+  const corsOptions = {
     origin: [
       'http://localhost:3000',
       'https://trader.mulfex.com',
@@ -19,19 +19,22 @@ async function bootstrap() {
       'X-Requested-With',
       'Origin',
       'Access-Control-Request-Method',
-      'Access-Control-Request-Headers',
-      'Access-Control-Allow-Origin',
-      'Access-Control-Allow-Methods',
-      'Access-Control-Allow-Headers'
+      'Access-Control-Request-Headers'
     ],
     exposedHeaders: ['Authorization', 'Content-Length'],
     credentials: true,
-    preflightContinue: false,
+    maxAge: 3600,
     optionsSuccessStatus: 204,
-    maxAge: 3600
-  });
+    preflightContinue: false
+  };
 
-  // 2) Luego montamos el prefijo "api"
+  // Aplicar middleware CORS de Express antes de cualquier ruta
+  app.use(cors(corsOptions));
+
+  // Habilitar CORS también para NestJS
+  app.enableCors(corsOptions);
+
+  // Configurar prefijo global
   app.setGlobalPrefix('api');
 
   await app.listen(process.env.PORT ?? 8000);
