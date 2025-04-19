@@ -9,11 +9,7 @@ async function bootstrap() {
       'http://localhost:3000',
       'https://trader.mulfex.com'
     ],
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-    exposedHeaders: ['Authorization'],
-    credentials: true,
-    maxAge: 3600
+    credentials: true
   });
 
   // Configurar prefijo global
