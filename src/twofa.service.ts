@@ -133,7 +133,7 @@ export class TwoFAService {
 
   // Métodos privados de utilidad
 
-  private async getUserProfile(userId: string) {
+  async getUserProfile(userId: string) {
     const { data: profile, error } = await supabase
       .from('profiles')
       .select('is_2fa_enabled, totp_secret')

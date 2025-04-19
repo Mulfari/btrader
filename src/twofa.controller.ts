@@ -36,4 +36,21 @@ export class TwoFAController {
     const userAgent = request.headers['user-agent'];
     return this.twoFAService.disable2FA(userId, token, clientIp, userAgent);
   }
+
+  @Post('status')
+  async check2FAStatus(@Body('userId') userId: string) {
+    try {
+      const profile = await this.twoFAService.getUserProfile(userId);
+      return {
+        is2FAEnabled: profile.is_2fa_enabled || false,
+        error: null
+      };
+    } catch (error: any) {
+      console.error('Error al verificar estado de 2FA:', error);
+      return {
+        is2FAEnabled: false,
+        error: error.message || 'Error al verificar estado de 2FA'
+      };
+    }
+  }
 }
