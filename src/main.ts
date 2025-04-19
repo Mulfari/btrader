@@ -1,27 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import * as cors from 'cors';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  const corsOptions = {
+  app.enableCors({
     origin: [
       'http://localhost:3000',
-      'https://trader.mulfex.com',
-      'https://bedgetrader-production.up.railway.app'
+      'https://trader.mulfex.com'
     ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
     exposedHeaders: ['Authorization'],
     credentials: true,
-    maxAge: 86400,
-    preflightContinue: false,
-    optionsSuccessStatus: 204
-  };
-
-  // Aplicar CORS antes de cualquier ruta
-  app.enableCors(corsOptions);
+    maxAge: 3600
+  });
 
   // Configurar prefijo global
   app.setGlobalPrefix('api');

@@ -24,8 +24,19 @@ export class TwoFAService {
    */
   async generateSecret(userId: string, clientIp?: string, userAgent?: string) {
     try {
+      console.log('Iniciando generación de secreto para usuario:', userId);
+
+      if (!userId) {
+        throw new BadRequestException('ID de usuario no proporcionado');
+      }
+
       // Verificar estado actual del 2FA
       const profile = await this.getUserProfile(userId);
+      
+      if (!profile) {
+        throw new BadRequestException('No se encontró el perfil del usuario');
+      }
+
       if (profile.is_2fa_enabled) {
         throw new BadRequestException('El 2FA ya está habilitado para este usuario');
       }
@@ -41,6 +52,8 @@ export class TwoFAService {
         is_2fa_enabled: false
       });
 
+      console.log('Secreto generado exitosamente para usuario:', userId);
+
       return {
         success: true,
         secret,
@@ -48,7 +61,12 @@ export class TwoFAService {
         error: null
       };
     } catch (error: any) {
-      console.error('Error en generateSecret:', error);
+      console.error('Error detallado en generateSecret:', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      
       return {
         success: false,
         secret: null,
@@ -134,6 +152,12 @@ export class TwoFAService {
   // Métodos privados de utilidad
 
   async getUserProfile(userId: string) {
+    console.log('Obteniendo perfil para usuario:', userId);
+
+    if (!userId) {
+      throw new BadRequestException('ID de usuario no proporcionado');
+    }
+
     const { data: profile, error } = await supabase
       .from('profiles')
       .select('is_2fa_enabled, totp_secret')
@@ -141,8 +165,24 @@ export class TwoFAService {
       .single();
 
     if (error) {
-      throw new BadRequestException('Error al obtener el perfil del usuario');
+      console.error('Error al obtener perfil:', {
+        userId,
+        error: error.message,
+        code: error.code,
+        details: error.details
+      });
+      throw new BadRequestException(`Error al obtener el perfil del usuario: ${error.message}`);
     }
+
+    if (!profile) {
+      console.error('Perfil no encontrado para usuario:', userId);
+      throw new BadRequestException('No se encontró el perfil del usuario');
+    }
+
+    console.log('Perfil obtenido exitosamente:', {
+      userId,
+      has2FA: profile.is_2fa_enabled
+    });
 
     return profile;
   }
