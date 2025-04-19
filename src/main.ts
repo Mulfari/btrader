@@ -7,11 +7,12 @@ async function bootstrap() {
   // Configurar CORS
   app.enableCors({
     origin: [
-      'http://localhost:3000', // Frontend en desarrollo
-      'https://bedgetrader-production.up.railway.app' // Frontend en producción
+      'http://localhost:3000',           // Frontend en desarrollo
+      'https://bedgetrader.vercel.app',  // Frontend en producción
+      'https://bedgetrader-production.up.railway.app' // Frontend en producción (alternativo)
     ],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Accept', 'Authorization'],
     credentials: true
   });
 
