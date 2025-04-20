@@ -5,14 +5,28 @@ import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.int
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  const isDevelopment = process.env.NODE_ENV === 'development';
+
   const corsOptions: CorsOptions = {
-    origin: [
-      'http://localhost:3000',
-      'https://trader.mulfex.com',
-      'https://btrader-production.up.railway.app'
-    ],
+    origin: isDevelopment 
+      ? true // Permitir todos los orígenes en desarrollo
+      : [
+          'http://localhost:3000',
+          'https://trader.mulfex.com',
+          'https://btrader-production.up.railway.app'
+        ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+    allowedHeaders: [
+      'Content-Type', 
+      'Authorization', 
+      'Accept', 
+      'Origin', 
+      'X-Requested-With',
+      'Access-Control-Allow-Origin',
+      'Access-Control-Allow-Headers',
+      'Access-Control-Allow-Methods',
+      'Access-Control-Allow-Credentials'
+    ],
     exposedHeaders: ['Authorization'],
     credentials: true,
     preflightContinue: false,
