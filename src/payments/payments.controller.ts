@@ -30,7 +30,8 @@ export class PaymentsController {
   ) {}
 
   @Post('create-subscription')
-  async createSubscription(@Body() data: CreateSubscriptionDto) {
+  @UseGuards(AuthGuard)
+  async createSubscription(@Body() data: CreateSubscriptionDto, @Req() request: Request) {
     this.logger.log('Recibiendo petición create-subscription:', JSON.stringify(data));
     
     if (!data.planId || !data.email) {
@@ -39,11 +40,32 @@ export class PaymentsController {
     }
 
     try {
-      // Primero creamos el customer
-      this.logger.log(`Creando customer para: ${data.email}`);
-      const customer = await this.stripeService.createCustomer(data.email);
+      // Verificar si el usuario ya tiene una suscripción activa
+      const userId = request['user'].id;
+      const { data: existingSubscription } = await this.supabaseService.supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'SUBSCRIBED')
+        .single();
+
+      if (existingSubscription) {
+        throw new BadRequestException('Ya tienes una suscripción activa');
+      }
+
+      // Buscar o crear el customer
+      let customer: Stripe.Customer;
+      const existingCustomers = await this.stripeService.listCustomers(data.email);
       
-      // Luego creamos la suscripción
+      if (existingCustomers.data.length > 0) {
+        customer = existingCustomers.data[0];
+        this.logger.log(`Cliente existente encontrado: ${customer.id}`);
+      } else {
+        customer = await this.stripeService.createCustomer(data.email);
+        this.logger.log(`Nuevo cliente creado: ${customer.id}`);
+      }
+      
+      // Crear la suscripción
       this.logger.log(`Creando suscripción para plan: ${data.planId}`);
       const subscription = await this.stripeService.createSubscription(
         customer.id,
@@ -71,6 +93,9 @@ export class PaymentsController {
         data,
         type: error.constructor.name
       });
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestException(error.message);
       }

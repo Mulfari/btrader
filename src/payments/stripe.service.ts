@@ -21,6 +21,13 @@ export class StripeService {
     });
   }
 
+  async listCustomers(email: string): Promise<Stripe.ApiListPromise<Stripe.Customer>> {
+    return this.stripe.customers.list({
+      email,
+      limit: 1,
+    });
+  }
+
   async createSubscription(customerId: string, planId: string): Promise<Stripe.Subscription> {
     if (!PRICE_IDS[planId]) {
       throw new Error(`Plan no válido: ${planId}`);
