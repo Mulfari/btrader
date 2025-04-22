@@ -1,9 +1,33 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
+import { ValidationPipe } from '@nestjs/common';
+import { json, urlencoded, raw } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Stripe webhook necesita el body sin parsear
+  app.use(
+    '/api/payments/webhook',
+    raw({ type: 'application/json' })
+  );
+
+  // Para el resto de rutas
+  app.use(json());
+  app.use(urlencoded({ extended: true }));
+
+  // Configurar ValidationPipe global
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true, // Elimina propiedades no decoradas
+      transform: true, // Transforma los tipos automáticamente
+      forbidNonWhitelisted: true, // Rechaza propiedades no permitidas
+      transformOptions: {
+        enableImplicitConversion: true, // Permite conversión implícita de tipos
+      },
+    }),
+  );
 
   const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -25,7 +49,8 @@ async function bootstrap() {
       'Access-Control-Allow-Origin',
       'Access-Control-Allow-Headers',
       'Access-Control-Allow-Methods',
-      'Access-Control-Allow-Credentials'
+      'Access-Control-Allow-Credentials',
+      'stripe-signature'
     ],
     exposedHeaders: ['Authorization'],
     credentials: true,
