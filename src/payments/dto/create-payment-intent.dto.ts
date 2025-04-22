@@ -8,4 +8,7 @@ export class CreatePaymentIntentDto {
   @IsOptional()
   @IsString()
   currency?: string = 'usd';
+
+  @IsString()
+  planId: string;
 } 

@@ -2,6 +2,21 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
+const PLAN_PRICES = {
+  plan_basic: {
+    amount: 999, // $9.99
+    currency: 'usd'
+  },
+  plan_pro: {
+    amount: 1999, // $19.99
+    currency: 'usd'
+  },
+  plan_enterprise: {
+    amount: 4999, // $49.99
+    currency: 'usd'
+  }
+};
+
 @Injectable()
 export class StripeService {
   private stripe: Stripe;
@@ -16,10 +31,18 @@ export class StripeService {
     });
   }
 
-  async createPaymentIntent(amount: number, currency: string = 'usd'): Promise<Stripe.PaymentIntent> {
+  async createPaymentIntent(planId: string): Promise<Stripe.PaymentIntent> {
+    const plan = PLAN_PRICES[planId];
+    if (!plan) {
+      throw new Error('Plan no válido');
+    }
+
     return this.stripe.paymentIntents.create({
-      amount,
-      currency,
+      amount: plan.amount,
+      currency: plan.currency,
+      metadata: {
+        planId
+      }
     });
   }
 

@@ -7,7 +7,9 @@ import {
   Req,
   Logger,
   BadRequestException,
-  InternalServerErrorException
+  InternalServerErrorException,
+  Get,
+  UseGuards
 } from '@nestjs/common';
 import { Request } from 'express';
 import { StripeService } from './stripe.service';
@@ -15,6 +17,8 @@ import { WebhookHandlerService } from './webhook-handler.service';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import Stripe from 'stripe';
+import { SupabaseService } from './supabase.service';
+import { AuthGuard } from '../auth/auth.guard';
 
 @Controller('payments')
 export class PaymentsController {
@@ -22,16 +26,14 @@ export class PaymentsController {
 
   constructor(
     private readonly stripeService: StripeService,
-    private readonly webhookHandler: WebhookHandlerService
+    private readonly webhookHandler: WebhookHandlerService,
+    private readonly supabaseService: SupabaseService
   ) {}
 
-  @Post('create-payment-intent')
+  @Post('create-intent')
   async createPaymentIntent(@Body() data: CreatePaymentIntentDto) {
     try {
-      const paymentIntent = await this.stripeService.createPaymentIntent(
-        data.amount,
-        data.currency,
-      );
+      const paymentIntent = await this.stripeService.createPaymentIntent(data.planId);
       return {
         clientSecret: paymentIntent.client_secret,
       };
@@ -44,6 +46,32 @@ export class PaymentsController {
         throw new BadRequestException(error.message);
       }
       throw new InternalServerErrorException('Error procesando el pago');
+    }
+  }
+
+  @Get('subscription-status')
+  @UseGuards(AuthGuard)
+  async getSubscriptionStatus(@Req() request: Request) {
+    try {
+      const userId = request['user'].id;
+      const { data: subscription } = await this.supabaseService.supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      return {
+        status: subscription?.status || 'none',
+        currentPeriodEnd: subscription?.current_period_end || null,
+        plan: subscription?.metadata?.planId || null
+      };
+    } catch (error) {
+      this.logger.error('Error obteniendo estado de suscripción', {
+        error,
+      });
+      throw new InternalServerErrorException('Error obteniendo estado de suscripción');
     }
   }
 
