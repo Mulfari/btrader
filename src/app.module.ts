@@ -6,13 +6,15 @@ import { TwoFAService } from './twofa.service';
 import { TwoFAController } from './twofa.controller';
 import { AuthGuard } from './auth.guard';
 import { PaymentsModule } from './payments/payments.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    PaymentsModule
+    PaymentsModule,
+    HealthModule
   ],
   controllers: [AppController, TwoFAController],
   providers: [AppService, TwoFAService, AuthGuard],
