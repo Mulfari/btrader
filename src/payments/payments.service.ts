@@ -1,46 +1,25 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable } from '@nestjs/common';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
 @Injectable()
-export class PaymentsService implements OnModuleInit {
+export class PaymentsService {
   private readonly stripe: Stripe;
   private readonly supabase;
 
-  constructor(private configService: ConfigService) {
-    const stripeKey = this.configService.getOrThrow<string>('STRIPE_SECRET_KEY');
-    const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
-    const supabaseKey = this.configService.getOrThrow<string>('SUPABASE_SERVICE_ROLE_KEY');
-
-    this.stripe = new Stripe(stripeKey, {
-      apiVersion: '2025-03-31.basil',
+  constructor() {
+    this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2023-10-16',
     });
 
-    this.supabase = createClient(supabaseUrl, supabaseKey);
-  }
-
-  onModuleInit() {
-    // Validar que todas las variables de entorno necesarias estén presentes
-    const requiredEnvVars = [
-      'STRIPE_SECRET_KEY',
-      'STRIPE_WEBHOOK_SECRET',
-      'SUPABASE_URL',
-      'SUPABASE_SERVICE_ROLE_KEY',
-      'FRONTEND_URL'
-    ];
-
-    for (const envVar of requiredEnvVars) {
-      const value = this.configService.get<string>(envVar);
-      if (!value) {
-        throw new Error(`Missing required environment variable: ${envVar}`);
-      }
-    }
+    this.supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
   }
 
   async createCheckoutSession(userId: string, amount: number) {
     try {
-      const frontendUrl = this.configService.getOrThrow<string>('FRONTEND_URL');
       const session = await this.stripe.checkout.sessions.create({
         payment_method_types: ['card'],
         line_items: [
@@ -56,8 +35,8 @@ export class PaymentsService implements OnModuleInit {
           },
         ],
         mode: 'payment',
-        success_url: `${frontendUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${frontendUrl}/payment/cancel`,
+        success_url: `${process.env.FRONTEND_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.FRONTEND_URL}/payment/cancel`,
       });
 
       // Crear registro en la tabla orders
@@ -82,11 +61,10 @@ export class PaymentsService implements OnModuleInit {
 
   async handleWebhook(signature: string, rawBody: Buffer) {
     try {
-      const webhookSecret = this.configService.getOrThrow<string>('STRIPE_WEBHOOK_SECRET');
       const event = this.stripe.webhooks.constructEvent(
         rawBody,
         signature,
-        webhookSecret
+        process.env.STRIPE_WEBHOOK_SECRET
       );
 
       switch (event.type) {
