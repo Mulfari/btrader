@@ -1,6 +1,6 @@
 import { IsString, IsNotEmpty, IsEmail } from 'class-validator';
 
-export class CreatePaymentIntentDto {
+export class CreateSubscriptionDto {
   @IsString()
   @IsNotEmpty()
   planId: string;

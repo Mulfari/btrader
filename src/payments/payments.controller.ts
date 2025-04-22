@@ -14,8 +14,7 @@ import {
 import { Request } from 'express';
 import { StripeService } from './stripe.service';
 import { WebhookHandlerService } from './webhook-handler.service';
-import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
-import { CreateCustomerDto } from './dto/create-customer.dto';
+import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import Stripe from 'stripe';
 import { SupabaseService } from './supabase.service';
 import { AuthGuard } from '../auth/auth.guard';
@@ -30,22 +29,52 @@ export class PaymentsController {
     private readonly supabaseService: SupabaseService
   ) {}
 
-  @Post('create-intent')
-  async createPaymentIntent(@Body() data: CreatePaymentIntentDto) {
+  @Post('create-subscription')
+  async createSubscription(@Body() data: CreateSubscriptionDto) {
+    this.logger.log('Recibiendo petición create-subscription:', JSON.stringify(data));
+    
+    if (!data.planId || !data.email) {
+      this.logger.error('planId o email no proporcionados');
+      throw new BadRequestException('planId y email son requeridos');
+    }
+
     try {
-      const paymentIntent = await this.stripeService.createPaymentIntent(data.planId);
+      // Primero creamos el customer
+      this.logger.log(`Creando customer para: ${data.email}`);
+      const customer = await this.stripeService.createCustomer(data.email);
+      
+      // Luego creamos la suscripción
+      this.logger.log(`Creando suscripción para plan: ${data.planId}`);
+      const subscription = await this.stripeService.createSubscription(
+        customer.id,
+        data.planId
+      );
+
+      this.logger.log('Suscripción creada exitosamente:', JSON.stringify({
+        id: subscription.id,
+        status: subscription.status,
+        customerId: customer.id
+      }));
+
+      // La suscripción incluirá el latest_invoice.payment_intent expandido
+      const invoice = subscription.latest_invoice as Stripe.Invoice;
+      const paymentIntent = (invoice as any).payment_intent as Stripe.PaymentIntent;
+
       return {
+        subscriptionId: subscription.id,
         clientSecret: paymentIntent.client_secret,
       };
     } catch (error) {
-      this.logger.error('Error creando PaymentIntent', {
-        error,
+      this.logger.error('Error creando suscripción', {
+        error: error.message,
+        stack: error.stack,
         data,
+        type: error.constructor.name
       });
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestException(error.message);
       }
-      throw new InternalServerErrorException('Error procesando el pago');
+      throw new InternalServerErrorException('Error procesando la suscripción');
     }
   }
 
@@ -75,26 +104,6 @@ export class PaymentsController {
     }
   }
 
-  @Post('create-customer')
-  async createCustomer(@Body() data: CreateCustomerDto) {
-    try {
-      const customer = await this.stripeService.createCustomer(
-        data.email,
-        data.name,
-      );
-      return customer;
-    } catch (error) {
-      this.logger.error('Error creando Customer', {
-        error,
-        data,
-      });
-      if (error instanceof Stripe.errors.StripeError) {
-        throw new BadRequestException(error.message);
-      }
-      throw new InternalServerErrorException('Error creando el cliente');
-    }
-  }
-
   @Post('webhook')
   async handleWebhook(
     @Req() request: RawBodyRequest<Request>,
@@ -111,10 +120,8 @@ export class PaymentsController {
         signature,
       );
 
-      // Procesar el evento de forma asíncrona
       await this.webhookHandler.handleEvent(event);
 
-      // Responder inmediatamente
       return { received: true };
     } catch (error) {
       this.logger.error('Error procesando webhook', {

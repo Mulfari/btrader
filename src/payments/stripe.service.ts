@@ -2,19 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
-const PLAN_PRICES = {
-  plan_basic: {
-    amount: 999, // $9.99
-    currency: 'usd'
-  },
-  plan_pro: {
-    amount: 1999, // $19.99
-    currency: 'usd'
-  },
-  plan_enterprise: {
-    amount: 4999, // $49.99
-    currency: 'usd'
-  }
+const PRICE_IDS = {
+  premium_monthly: 'price_1RGo1qRuWbKDYbCwjbVIzhnV',  // ID del precio mensual
+  premium_annual: 'price_1RGo28RuWbKDYbCwPoamchVZ'    // ID del precio anual
 };
 
 @Injectable()
@@ -27,22 +17,22 @@ export class StripeService {
       throw new Error('STRIPE_SECRET_KEY must be defined');
     }
     this.stripe = new Stripe(stripeKey, {
-      apiVersion: '2025-03-31.basil',
+      apiVersion: '2025-03-31.basil' as Stripe.LatestApiVersion,
     });
   }
 
-  async createPaymentIntent(planId: string): Promise<Stripe.PaymentIntent> {
-    const plan = PLAN_PRICES[planId];
-    if (!plan) {
+  async createSubscription(customerId: string, planId: string): Promise<Stripe.Subscription> {
+    const priceId = PRICE_IDS[planId];
+    if (!priceId) {
       throw new Error('Plan no válido');
     }
 
-    return this.stripe.paymentIntents.create({
-      amount: plan.amount,
-      currency: plan.currency,
-      metadata: {
-        planId
-      }
+    return this.stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: 'default_incomplete',
+      payment_settings: { save_default_payment_method: 'on_subscription' },
+      expand: ['latest_invoice.payment_intent']
     });
   }
 
@@ -53,10 +43,14 @@ export class StripeService {
     });
   }
 
-  async attachPaymentMethod(customerId: string, paymentMethodId: string): Promise<Stripe.PaymentMethod> {
-    return this.stripe.paymentMethods.attach(paymentMethodId, {
-      customer: customerId,
+  async retrieveSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+    return this.stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ['latest_invoice.payment_intent']
     });
+  }
+
+  async cancelSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+    return this.stripe.subscriptions.cancel(subscriptionId);
   }
 
   async constructEventFromPayload(payload: string, signature: string): Promise<Stripe.Event> {
