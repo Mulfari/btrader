@@ -3,8 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 const PRICE_IDS = {
-  premium_monthly: 'price_1RGo1qRuWbKDYbCwjbVIzhnV',  // ID del precio mensual
-  premium_annual: 'price_1RGo28RuWbKDYbCwPoamchVZ'    // ID del precio anual
+  'price_1RGoGnRuWbKDYbCwIEZiCDvu': 'price_1RGoGnRuWbKDYbCwIEZiCDvu',  // ID del precio mensual
+  'price_1RGoGwRuWbKDYbCwfBEGRjlr': 'price_1RGoGwRuWbKDYbCwfBEGRjlr'   // ID del precio anual
 };
 
 @Injectable()
@@ -17,23 +17,27 @@ export class StripeService {
       throw new Error('STRIPE_SECRET_KEY must be defined');
     }
     this.stripe = new Stripe(stripeKey, {
-      apiVersion: '2025-03-31.basil' as Stripe.LatestApiVersion,
+      apiVersion: '2023-10-16' as Stripe.LatestApiVersion,
     });
   }
 
   async createSubscription(customerId: string, planId: string): Promise<Stripe.Subscription> {
-    const priceId = PRICE_IDS[planId];
-    if (!priceId) {
-      throw new Error('Plan no válido');
+    if (!PRICE_IDS[planId]) {
+      throw new Error(`Plan no válido: ${planId}`);
     }
 
-    return this.stripe.subscriptions.create({
-      customer: customerId,
-      items: [{ price: priceId }],
-      payment_behavior: 'default_incomplete',
-      payment_settings: { save_default_payment_method: 'on_subscription' },
-      expand: ['latest_invoice.payment_intent']
-    });
+    try {
+      return await this.stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: planId }],
+        payment_behavior: 'default_incomplete',
+        payment_settings: { save_default_payment_method: 'on_subscription' },
+        expand: ['latest_invoice.payment_intent']
+      });
+    } catch (error) {
+      console.error('Error creating subscription:', error);
+      throw new Error(`Error al crear la suscripción: ${error.message}`);
+    }
   }
 
   async createCustomer(email: string, name?: string): Promise<Stripe.Customer> {
