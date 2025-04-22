@@ -3,8 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 const PRICE_IDS = {
-  'price_1RGoGnRuWbKDYbCwIEZiCDvu': 'price_1RGoGnRuWbKDYbCwIEZiCDvu',  // ID del precio mensual
-  'price_1RGoGwRuWbKDYbCwfBEGRjlr': 'price_1RGoGwRuWbKDYbCwfBEGRjlr'   // ID del precio anual
+  'price_1RGoRgRuWbKDYbCwB15xXimw': 'price_1RGoRgRuWbKDYbCwB15xXimw',  // ID del precio mensual en modo prueba
+  'price_1RGoRkRuWbKDYbCw1ZwuXA0o': 'price_1RGoRkRuWbKDYbCw1ZwuXA0o'   // ID del precio anual en modo prueba
 };
 
 @Injectable()
