@@ -4,10 +4,9 @@ import { AppService } from './app.service';
 import { TwoFAService } from './twofa.service';
 import { TwoFAController } from './twofa.controller';
 import { AuthGuard } from './auth.guard';
-import { PaymentsModule } from './payments/payments.module';
 
 @Module({
-  imports: [PaymentsModule],
+  imports: [],
   controllers: [AppController, TwoFAController],
   providers: [AppService, TwoFAService, AuthGuard],
 })
