@@ -44,25 +44,23 @@ export class StripeService {
   async createSubscription(customerId: string, planId: string): Promise<Stripe.Subscription> {
     this.logger.log('Validando plan:', planId);
     
-    // Temporalmente deshabilitamos la validación de IDs de precios
-    // hasta que tengamos los IDs correctos de prueba
-    /*if (!PRICE_IDS[planId]) {
+    if (!PRICE_IDS[planId]) {
       this.logger.error('Plan no válido:', {
         planId,
         availablePlans: Object.keys(PRICE_IDS)
       });
       throw new Error(`Plan no válido: ${planId}`);
-    }*/
+    }
 
     try {
       this.logger.log('Creando suscripción:', {
         customerId,
-        planId
+        planId: PRICE_IDS[planId]
       });
 
       const subscription = await this.stripe.subscriptions.create({
         customer: customerId,
-        items: [{ price: planId }],
+        items: [{ price: PRICE_IDS[planId] }],
         payment_behavior: 'default_incomplete',
         payment_settings: { save_default_payment_method: 'on_subscription' },
         expand: ['latest_invoice.payment_intent']
