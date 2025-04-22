@@ -2,8 +2,8 @@ name: 🚀 Ping Railway Service
 
 on:
   schedule:
-    - cron: '*/13 * * * *'    # cada 13 minutos
-  workflow_dispatch:         # te permite ejecutarlo manualmente
+    - cron: '*/5 * * * *'    # cada 5 minutos
+  workflow_dispatch:         # permite ejecución manual
 
 jobs:
   keep-alive:
@@ -11,4 +11,4 @@ jobs:
     steps:
       - name: Ping backend
         run: |
-          curl -fsS https://btrader-production.up.railway.app/health || echo "❌ Ping fallido" 
+          curl -fsS https://btrader-production.up.railway.app/api/health || echo "❌ Ping fallido" 
