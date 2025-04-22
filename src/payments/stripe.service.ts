@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 const PRICE_IDS = {
-  'price_test_monthly': 'price_test_monthly',  // ID del precio mensual en modo prueba
+  'price_test_monthly': 'price_1RGph6RuWbKDYbCw10AdEZSL',  // ID del precio mensual en modo prueba
   'price_test_annual': 'price_test_annual'     // ID del precio anual en modo prueba
 };
 
