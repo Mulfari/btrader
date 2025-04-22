@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
@@ -9,6 +9,7 @@ const PRICE_IDS = {
 
 @Injectable()
 export class StripeService {
+  private readonly logger = new Logger(StripeService.name);
   private stripe: Stripe;
 
   constructor(private configService: ConfigService) {
@@ -19,31 +20,70 @@ export class StripeService {
     this.stripe = new Stripe(stripeKey, {
       apiVersion: '2023-10-16' as Stripe.LatestApiVersion,
     });
+    this.logger.log('Stripe inicializado con la clave:', stripeKey.substring(0, 8) + '...');
   }
 
   async listCustomers(email: string): Promise<Stripe.ApiListPromise<Stripe.Customer>> {
-    return this.stripe.customers.list({
-      email,
-      limit: 1,
-    });
+    this.logger.log('Buscando clientes por email:', email);
+    try {
+      const result = await this.stripe.customers.list({
+        email,
+        limit: 1,
+      });
+      this.logger.log('Clientes encontrados:', result.data.length);
+      return result;
+    } catch (error) {
+      this.logger.error('Error listando clientes:', {
+        error: error.message,
+        email
+      });
+      throw error;
+    }
   }
 
   async createSubscription(customerId: string, planId: string): Promise<Stripe.Subscription> {
+    this.logger.log('Validando plan:', planId);
     if (!PRICE_IDS[planId]) {
+      this.logger.error('Plan no válido:', {
+        planId,
+        availablePlans: Object.keys(PRICE_IDS)
+      });
       throw new Error(`Plan no válido: ${planId}`);
     }
 
     try {
-      return await this.stripe.subscriptions.create({
+      this.logger.log('Creando suscripción:', {
+        customerId,
+        planId
+      });
+
+      const subscription = await this.stripe.subscriptions.create({
         customer: customerId,
         items: [{ price: planId }],
         payment_behavior: 'default_incomplete',
         payment_settings: { save_default_payment_method: 'on_subscription' },
         expand: ['latest_invoice.payment_intent']
       });
+
+      this.logger.log('Suscripción creada:', {
+        subscriptionId: subscription.id,
+        status: subscription.status,
+        hasInvoice: !!subscription.latest_invoice,
+        hasPaymentIntent: !!(subscription.latest_invoice as any)?.payment_intent
+      });
+
+      return subscription;
     } catch (error) {
-      console.error('Error creating subscription:', error);
-      throw new Error(`Error al crear la suscripción: ${error.message}`);
+      this.logger.error('Error creando suscripción:', {
+        error: {
+          message: error.message,
+          type: error.type,
+          code: error.code
+        },
+        customerId,
+        planId
+      });
+      throw error;
     }
   }
 

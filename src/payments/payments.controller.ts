@@ -32,74 +32,122 @@ export class PaymentsController {
   @Post('create-subscription')
   @UseGuards(AuthGuard)
   async createSubscription(@Body() data: CreateSubscriptionDto, @Req() request: Request) {
-    this.logger.log('Recibiendo petición create-subscription:', JSON.stringify(data));
+    this.logger.log('Iniciando creación de suscripción:', {
+      data,
+      userId: request['user']?.id,
+      headers: request.headers
+    });
     
     if (!data.planId || !data.email) {
-      this.logger.error('planId o email no proporcionados');
+      this.logger.error('planId o email no proporcionados', { data });
       throw new BadRequestException('planId y email son requeridos');
     }
 
     try {
       // Verificar si el usuario ya tiene una suscripción activa
       const userId = request['user'].id;
-      const { data: existingSubscription } = await this.supabaseService.supabase
+      this.logger.log('Verificando suscripción existente para usuario:', userId);
+      
+      const { data: existingSubscription, error: supabaseError } = await this.supabaseService.supabase
         .from('subscriptions')
         .select('*')
         .eq('user_id', userId)
         .eq('status', 'SUBSCRIBED')
         .single();
 
+      if (supabaseError) {
+        this.logger.error('Error consultando suscripción en Supabase:', supabaseError);
+      }
+
       if (existingSubscription) {
+        this.logger.warn('Usuario ya tiene suscripción activa:', {
+          userId,
+          subscription: existingSubscription
+        });
         throw new BadRequestException('Ya tienes una suscripción activa');
       }
 
       // Buscar o crear el customer
+      this.logger.log('Buscando cliente existente en Stripe:', data.email);
       let customer: Stripe.Customer;
       const existingCustomers = await this.stripeService.listCustomers(data.email);
       
       if (existingCustomers.data.length > 0) {
         customer = existingCustomers.data[0];
-        this.logger.log(`Cliente existente encontrado: ${customer.id}`);
+        this.logger.log('Cliente existente encontrado:', {
+          customerId: customer.id,
+          email: customer.email
+        });
       } else {
+        this.logger.log('Creando nuevo cliente en Stripe:', data.email);
         customer = await this.stripeService.createCustomer(data.email);
-        this.logger.log(`Nuevo cliente creado: ${customer.id}`);
+        this.logger.log('Nuevo cliente creado:', {
+          customerId: customer.id,
+          email: customer.email
+        });
       }
       
       // Crear la suscripción
-      this.logger.log(`Creando suscripción para plan: ${data.planId}`);
+      this.logger.log('Iniciando creación de suscripción en Stripe:', {
+        customerId: customer.id,
+        planId: data.planId
+      });
+
       const subscription = await this.stripeService.createSubscription(
         customer.id,
         data.planId
       );
 
-      this.logger.log('Suscripción creada exitosamente:', JSON.stringify({
-        id: subscription.id,
+      this.logger.log('Suscripción creada exitosamente:', {
+        subscriptionId: subscription.id,
         status: subscription.status,
-        customerId: customer.id
-      }));
+        customerId: customer.id,
+        planId: data.planId
+      });
 
       // La suscripción incluirá el latest_invoice.payment_intent expandido
       const invoice = subscription.latest_invoice as Stripe.Invoice;
-      const paymentIntent = (invoice as any).payment_intent as Stripe.PaymentIntent;
+      if (!invoice) {
+        throw new Error('No se generó la factura para la suscripción');
+      }
 
-      return {
+      const paymentIntent = (invoice as any).payment_intent as Stripe.PaymentIntent;
+      if (!paymentIntent?.client_secret) {
+        throw new Error('No se generó el payment intent para la suscripción');
+      }
+
+      const response = {
         subscriptionId: subscription.id,
         clientSecret: paymentIntent.client_secret,
       };
+
+      this.logger.log('Retornando respuesta:', response);
+      return response;
+
     } catch (error) {
-      this.logger.error('Error creando suscripción', {
-        error: error.message,
-        stack: error.stack,
-        data,
-        type: error.constructor.name
+      this.logger.error('Error detallado creando suscripción:', {
+        error: {
+          message: error.message,
+          name: error.name,
+          stack: error.stack,
+          code: error.code
+        },
+        requestData: data,
+        userId: request['user']?.id
       });
+
       if (error instanceof BadRequestException) {
         throw error;
       }
       if (error instanceof Stripe.errors.StripeError) {
+        this.logger.error('Error de Stripe:', {
+          type: error.type,
+          code: error.code,
+          message: error.message
+        });
         throw new BadRequestException(error.message);
       }
-      throw new InternalServerErrorException('Error procesando la suscripción');
+      throw new InternalServerErrorException(`Error procesando la suscripción: ${error.message}`);
     }
   }
 
