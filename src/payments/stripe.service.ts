@@ -3,8 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 const PRICE_IDS = {
-  'price_monthly': 'price_1RGtNQRuWbKDYbCwAWDVJVqB',  // $29.99 mensual recurrente
-  'price_annual': 'price_1RGtNbRuWbKDYbCw4GLuB2FP'    // $299.90 anual recurrente (2 meses gratis)
+  'price_monthly': 'price_1RGtnbRuWbKDYbCwcfy7QcLy',  // $29.99 mensual recurrente
+  'price_annual': 'price_1RGtnfRuWbKDYbCwxSBnO5Lx'    // $299.90 anual recurrente (2 meses gratis)
 };
 
 @Injectable()
