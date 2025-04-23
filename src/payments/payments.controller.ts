@@ -207,4 +207,36 @@ export class PaymentsController {
       throw new InternalServerErrorException('Error procesando webhook');
     }
   }
+
+  @Post('create-checkout-session')
+  @UseGuards(AuthGuard)
+  async createCheckoutSession(
+    @Body() data: CreateSubscriptionDto,
+    @Req() request: Request
+  ) {
+    this.logger.log('Iniciando creación de sesión de checkout:', {
+      data,
+      userId: request['user']?.id
+    });
+
+    if (!data.planId || !data.email) {
+      this.logger.error('planId o email no proporcionados', { data });
+      throw new BadRequestException('planId y email son requeridos');
+    }
+
+    try {
+      const session = await this.stripeService.createCheckoutSession(
+        data.email,
+        data.planId
+      );
+
+      return { url: session.url };
+    } catch (error) {
+      this.logger.error('Error creando sesión de checkout:', error);
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestException(error.message);
+      }
+      throw new InternalServerErrorException('Error creando sesión de checkout');
+    }
+  }
 } 

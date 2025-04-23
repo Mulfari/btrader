@@ -3,14 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 const PRICE_IDS = {
-  'price_monthly': 'price_1RGuZFRuWbKDYbCwa8fMUSXc',  // $29.99 mensual recurrente
+  'price_monthly': 'price_1RGuZFRuWbKDYbCwcfy7QcLy',  // $29.99 mensual recurrente
   'price_annual': 'price_1RGuYYRuWbKDYbCwFyKopo7M'    // $299.90 anual recurrente (2 meses gratis)
 };
 
 @Injectable()
 export class StripeService {
   private readonly logger = new Logger(StripeService.name);
-  private stripe: Stripe;
+  public stripe: Stripe;
 
   constructor(private configService: ConfigService) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
@@ -111,5 +111,45 @@ export class StripeService {
       throw new Error('STRIPE_WEBHOOK_SECRET must be defined');
     }
     return this.stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+  }
+
+  async createCheckoutSession(email: string, planId: string): Promise<Stripe.Checkout.Session> {
+    this.logger.log('Creando sesión de checkout:', { email, planId });
+
+    if (!PRICE_IDS[planId]) {
+      this.logger.error('Plan no válido:', {
+        planId,
+        availablePlans: Object.keys(PRICE_IDS)
+      });
+      throw new Error(`Plan no válido: ${planId}`);
+    }
+
+    try {
+      const session = await this.stripe.checkout.sessions.create({
+        mode: 'subscription',
+        line_items: [{ price: PRICE_IDS[planId], quantity: 1 }],
+        customer_email: email,
+        success_url: `${this.configService.get('APP_URL')}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${this.configService.get('APP_URL')}/subscription`,
+      });
+
+      this.logger.log('Sesión de checkout creada:', {
+        sessionId: session.id,
+        url: session.url
+      });
+
+      return session;
+    } catch (error) {
+      this.logger.error('Error creando sesión de checkout:', {
+        error: {
+          message: error.message,
+          type: error.type,
+          code: error.code
+        },
+        email,
+        planId
+      });
+      throw error;
+    }
   }
 } 
