@@ -113,8 +113,8 @@ export class StripeService {
     return this.stripe.webhooks.constructEvent(payload, signature, webhookSecret);
   }
 
-  async createCheckoutSession(email: string, planId: string): Promise<Stripe.Checkout.Session> {
-    this.logger.log('Creando sesión de checkout:', { email, planId });
+  async createCheckoutSession(email: string, planId: string, couponId?: string): Promise<Stripe.Checkout.Session> {
+    this.logger.log('Creando sesión de checkout:', { email, planId, couponId });
 
     if (!PRICE_IDS[planId]) {
       this.logger.error('Plan no válido:', {
@@ -133,6 +133,8 @@ export class StripeService {
         mode: 'subscription',
         line_items: [{ price: PRICE_IDS[planId], quantity: 1 }],
         customer_email: email,
+        allow_promotion_codes: true,
+        discounts: couponId ? [{ coupon: couponId }] : [],
         success_url: `${appUrl}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${appUrl}/subscription/canceled`,
         metadata: {
@@ -143,7 +145,8 @@ export class StripeService {
 
       this.logger.log('Sesión de checkout creada:', {
         sessionId: session.id,
-        url: session.url
+        url: session.url,
+        hasCoupon: !!couponId
       });
 
       return session;
