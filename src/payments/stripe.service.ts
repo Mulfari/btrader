@@ -125,12 +125,16 @@ export class StripeService {
     }
 
     try {
+      const isDevelopment = process.env.NODE_ENV === 'development';
+      const appUrl = this.configService.get('APP_URL') || 
+        (isDevelopment ? 'http://localhost:3000' : 'https://trader.mulfex.com');
+      
       const session = await this.stripe.checkout.sessions.create({
         mode: 'subscription',
         line_items: [{ price: PRICE_IDS[planId], quantity: 1 }],
         customer_email: email,
-        success_url: `${this.configService.get('APP_URL')}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${this.configService.get('APP_URL')}/subscription`,
+        success_url: `${appUrl}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/subscription`,
       });
 
       this.logger.log('Sesión de checkout creada:', {
