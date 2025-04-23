@@ -133,8 +133,12 @@ export class StripeService {
         mode: 'subscription',
         line_items: [{ price: PRICE_IDS[planId], quantity: 1 }],
         customer_email: email,
-        success_url: `${appUrl}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl}/subscription`,
+        success_url: `${appUrl}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/subscription/canceled`,
+        metadata: {
+          planId,
+          planName: planId === 'price_monthly' ? 'Premium Mensual' : 'Premium Anual'
+        }
       });
 
       this.logger.log('Sesión de checkout creada:', {
