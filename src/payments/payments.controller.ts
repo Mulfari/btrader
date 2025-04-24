@@ -87,6 +87,25 @@ export class PaymentsController {
         });
       }
       
+      // -- INICIO: Guardar Stripe Customer ID en Profiles --
+      const { error: profileUpdateError } = await this.supabaseService.supabase
+        .from('profiles')
+        .update({ stripe_customer_id: customer.id })
+        .eq('id', userId);
+
+      if (profileUpdateError) {
+        this.logger.error('Error actualizando stripe_customer_id en profiles:', {
+          userId,
+          customerId: customer.id,
+          error: profileUpdateError,
+        });
+        // Considera si lanzar un error aquí o solo loguearlo
+        // throw new InternalServerErrorException('No se pudo actualizar el perfil con el ID de cliente de Stripe');
+      } else {
+        this.logger.log('Stripe Customer ID guardado en profiles:', { userId, customerId: customer.id });
+      }
+      // -- FIN: Guardar Stripe Customer ID en Profiles --
+
       // Crear la suscripción
       this.logger.log('Iniciando creación de suscripción en Stripe:', {
         customerId: customer.id,
@@ -225,8 +244,40 @@ export class PaymentsController {
     }
 
     try {
+      // --- INICIO: Buscar/Crear Customer y guardar ID --- 
+      const userId = request['user'].id;
+      this.logger.log('Buscando/Creando cliente para Checkout Session:', { email: data.email, userId });
+      let customer: Stripe.Customer;
+      const existingCustomers = await this.stripeService.listCustomers(data.email);
+
+      if (existingCustomers.data.length > 0) {
+        customer = existingCustomers.data[0];
+        this.logger.log('Cliente existente encontrado para Checkout:', { customerId: customer.id });
+      } else {
+        customer = await this.stripeService.createCustomer(data.email);
+        this.logger.log('Nuevo cliente creado para Checkout:', { customerId: customer.id });
+      }
+
+      // Guardar ID en profiles
+      const { error: profileUpdateError } = await this.supabaseService.supabase
+        .from('profiles')
+        .update({ stripe_customer_id: customer.id })
+        .eq('id', userId);
+      
+      if (profileUpdateError) {
+         this.logger.error('Error actualizando stripe_customer_id en profiles (Checkout):', {
+          userId,
+          customerId: customer.id,
+          error: profileUpdateError,
+        });
+         // Podrías lanzar error aquí si es crítico
+      } else {
+         this.logger.log('Stripe Customer ID guardado en profiles (Checkout):', { userId, customerId: customer.id });
+      }
+      // --- FIN: Buscar/Crear Customer y guardar ID --- 
+
       const session = await this.stripeService.createCheckoutSession(
-        data.email,
+        customer.id,
         data.planId
       );
 
