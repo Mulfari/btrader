@@ -6,6 +6,7 @@ import { TwoFAService } from './twofa.service';
 import { TwoFAController } from './twofa.controller';
 import { AuthGuard } from './auth.guard';
 import { PaymentsModule } from './payments/payments.module';
+import { MarketHoursModule } from './market-hours/market-hours.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { PaymentsModule } from './payments/payments.module';
       isGlobal: true,
     }),
     PaymentsModule,
+    MarketHoursModule,
   ],
   controllers: [AppController, TwoFAController],
   providers: [AppService, TwoFAService, AuthGuard],
