@@ -13,6 +13,22 @@ export class MarketHoursService {
       daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
       // holidays: ['2024-01-01', '2024-07-04'] // Ejemplo de festivos
     },
+    {
+      id: 'lse',
+      name: 'London Stock Exchange',
+      timeZone: 'Europe/London',
+      openTimeLocal: '08:00',
+      closeTimeLocal: '16:30',
+      daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
+    },
+    {
+      id: 'tse',
+      name: 'Tokyo Stock Exchange',
+      timeZone: 'Asia/Tokyo',
+      openTimeLocal: '09:00',
+      closeTimeLocal: '15:00',
+      daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
+    },
     // Aquí podríamos añadir más mercados en el futuro
   ];
 
