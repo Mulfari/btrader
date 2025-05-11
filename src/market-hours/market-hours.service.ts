@@ -26,7 +26,7 @@ export class MarketHoursService {
       name: 'Tokyo Stock Exchange',
       timeZone: 'Asia/Tokyo',
       openTimeLocal: '09:00',
-      closeTimeLocal: '15:00',
+      closeTimeLocal: '15:00', // Cierre a las 15:00 JST
       daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
     },
     {
@@ -34,24 +34,24 @@ export class MarketHoursService {
       name: 'Hong Kong Stock Exchange',
       timeZone: 'Asia/Hong_Kong',
       openTimeLocal: '09:30',
-      closeTimeLocal: '16:00',
-      daysOfWeek: [1, 2, 3, 4, 5],
+      closeTimeLocal: '16:00', // HKEX cierra a las 16:00 HKT, con pausa de almuerzo 12:00-13:00
+      daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
     },
     {
       id: 'sse',
       name: 'Shanghai Stock Exchange',
       timeZone: 'Asia/Shanghai',
       openTimeLocal: '09:30',
-      closeTimeLocal: '15:00',
-      daysOfWeek: [1, 2, 3, 4, 5],
+      closeTimeLocal: '15:00', // SSE 09:30-11:30, 13:00-15:00. Simplificado.
+      daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
     },
     {
       id: 'asx',
       name: 'Australian Securities Exchange',
       timeZone: 'Australia/Sydney',
       openTimeLocal: '10:00',
-      closeTimeLocal: '16:00',
-      daysOfWeek: [1, 2, 3, 4, 5],
+      closeTimeLocal: '16:00', // ASX 10:00-16:00 AEDT/AEST
+      daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
     },
     // Aquí podríamos añadir más mercados en el futuro
   ];
