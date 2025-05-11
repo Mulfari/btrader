@@ -14,44 +14,12 @@ export class MarketHoursService {
       // holidays: ['2024-01-01', '2024-07-04'] // Ejemplo de festivos
     },
     {
-      id: 'nasdaq',
-      name: 'NASDAQ',
-      timeZone: 'America/New_York',
-      openTimeLocal: '09:30',
-      closeTimeLocal: '16:00',
-      daysOfWeek: [1, 2, 3, 4, 5],
-    },
-    {
-      id: 'tsx',
-      name: 'Toronto Stock Exchange (TSX)',
-      timeZone: 'America/Toronto',
-      openTimeLocal: '09:30',
-      closeTimeLocal: '16:00',
-      daysOfWeek: [1, 2, 3, 4, 5],
-    },
-    {
       id: 'lse',
       name: 'London Stock Exchange',
       timeZone: 'Europe/London',
       openTimeLocal: '08:00',
       closeTimeLocal: '16:30',
       daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
-    },
-    {
-      id: 'xetra',
-      name: 'XETRA (Frankfurt)',
-      timeZone: 'Europe/Berlin',
-      openTimeLocal: '09:00',
-      closeTimeLocal: '17:30',
-      daysOfWeek: [1, 2, 3, 4, 5],
-    },
-    {
-      id: 'euronext',
-      name: 'Euronext Paris',
-      timeZone: 'Europe/Paris',
-      openTimeLocal: '09:00',
-      closeTimeLocal: '17:30',
-      daysOfWeek: [1, 2, 3, 4, 5],
     },
     {
       id: 'tse',
