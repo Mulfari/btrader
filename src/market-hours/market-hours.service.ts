@@ -29,6 +29,30 @@ export class MarketHoursService {
       closeTimeLocal: '15:00',
       daysOfWeek: [1, 2, 3, 4, 5], // Lunes a Viernes
     },
+    {
+      id: 'hkex',
+      name: 'Hong Kong Stock Exchange',
+      timeZone: 'Asia/Hong_Kong',
+      openTimeLocal: '09:30',
+      closeTimeLocal: '16:00',
+      daysOfWeek: [1, 2, 3, 4, 5],
+    },
+    {
+      id: 'sse',
+      name: 'Shanghai Stock Exchange',
+      timeZone: 'Asia/Shanghai',
+      openTimeLocal: '09:30',
+      closeTimeLocal: '15:00',
+      daysOfWeek: [1, 2, 3, 4, 5],
+    },
+    {
+      id: 'asx',
+      name: 'Australian Securities Exchange',
+      timeZone: 'Australia/Sydney',
+      openTimeLocal: '10:00',
+      closeTimeLocal: '16:00',
+      daysOfWeek: [1, 2, 3, 4, 5],
+    },
     // Aquí podríamos añadir más mercados en el futuro
   ];
 
