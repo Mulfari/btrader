@@ -8,6 +8,7 @@ import { AuthGuard } from './auth.guard';
 import { PaymentsModule } from './payments/payments.module';
 import { MarketHoursModule } from './market-hours/market-hours.module';
 import { MarketModule } from './market/market.module';
+import { SubaccountsModule } from './subaccounts/subaccounts.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { MarketModule } from './market/market.module';
     PaymentsModule,
     MarketHoursModule,
     MarketModule,
+    SubaccountsModule,
   ],
   controllers: [AppController, TwoFAController],
   providers: [AppService, TwoFAService, AuthGuard],
