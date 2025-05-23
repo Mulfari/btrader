@@ -63,15 +63,22 @@ export class SubaccountsService {
     api_key: string;
     secret_key: string;
     is_demo: boolean;
+    name?: string;
   }>): Promise<Operation[]> {
     const allOperations: Operation[] = [];
 
     for (const subaccount of subaccounts) {
       try {
+        this.logger.log(`Getting positions for subaccount: ${subaccount.name || subaccount.id}`);
         const operations = await this.getPositionsForSubaccount(subaccount);
         allOperations.push(...operations);
-      } catch (error) {
-        this.logger.error(`Error getting positions for subaccount ${subaccount.id}:`, error);
+        this.logger.log(`Found ${operations.length} positions for subaccount: ${subaccount.name || subaccount.id}`);
+      } catch (error: any) {
+        this.logger.error(`Error getting positions for subaccount ${subaccount.name || subaccount.id}:`, {
+          error: error.message,
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo
+        });
         // Continue with other subaccounts even if one fails
       }
     }
@@ -84,6 +91,7 @@ export class SubaccountsService {
     api_key: string;
     secret_key: string;
     is_demo: boolean;
+    name?: string;
   }): Promise<Operation[]> {
     try {
       const timestamp = Date.now();
@@ -94,6 +102,11 @@ export class SubaccountsService {
       const baseUrl = subaccount.is_demo 
         ? 'https://api-testnet.bybit.com' 
         : 'https://api.bybit.com';
+
+      this.logger.debug(`Calling Bybit API for ${subaccount.name || subaccount.id}:`, {
+        url: `${baseUrl}/v5/position/list`,
+        isDemo: subaccount.is_demo
+      });
 
       const response = await axios.get(`${baseUrl}/v5/position/list${params}`, {
         headers: {
@@ -106,20 +119,27 @@ export class SubaccountsService {
       });
 
       if (response.data.retCode !== 0) {
-        throw new Error(`Bybit API error: ${response.data.retMsg}`);
+        this.logger.error(`Bybit API error for ${subaccount.name}:`, {
+          retCode: response.data.retCode,
+          retMsg: response.data.retMsg,
+          subaccountId: subaccount.id
+        });
+        throw new Error(`Bybit API error: ${response.data.retMsg} (code: ${response.data.retCode})`);
       }
 
       const positions: BybitPosition[] = response.data.result?.list || [];
+      this.logger.debug(`Bybit returned ${positions.length} total positions for ${subaccount.name}`);
       
       // Filter only positions with size > 0 (open positions)
       const openPositions = positions.filter(pos => parseFloat(pos.size) > 0);
+      this.logger.log(`Found ${openPositions.length} open positions for ${subaccount.name}`);
 
       // Transform Bybit positions to our Operation format
       return openPositions.map(position => ({
         id: `${subaccount.id}-${position.symbol}-${position.side}`,
         subAccountId: subaccount.id,
         symbol: position.symbol.replace('USDT', ''), // Remove USDT suffix
-        side: position.side === 'Buy' ? 'buy' : 'sell',
+        side: position.side === 'Buy' ? 'buy' : 'sell' as const,
         status: 'open' as const,
         price: parseFloat(position.entryPrice),
         quantity: parseFloat(position.size),
@@ -134,8 +154,21 @@ export class SubaccountsService {
         exchange: 'Bybit',
       }));
 
-    } catch (error) {
-      this.logger.error(`Error fetching positions for subaccount ${subaccount.id}:`, error);
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        this.logger.error(`Axios error for subaccount ${subaccount.name || subaccount.id}:`, {
+          status: error.response?.status,
+          data: error.response?.data,
+          message: error.message,
+          subaccountId: subaccount.id
+        });
+        
+        // Si es un error 401, probablemente las API keys son inválidas
+        if (error.response?.status === 401) {
+          throw new Error(`Invalid API credentials for subaccount ${subaccount.name || subaccount.id}`);
+        }
+      }
+      
       throw error;
     }
   }

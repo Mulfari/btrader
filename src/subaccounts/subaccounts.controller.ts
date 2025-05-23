@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Request, Logger } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { SubaccountsService } from './subaccounts.service';
 import { AuthGuard } from '../auth.guard';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
@@ -33,18 +33,24 @@ export class SubaccountsController {
       // Get user ID from the authenticated request
       const userId = req.user?.id;
       if (!userId) {
-        throw new Error('User not authenticated');
+        this.logger.error('User not authenticated - no user ID in request');
+        throw new HttpException('User not authenticated', HttpStatus.UNAUTHORIZED);
       }
 
-      // Get user's subaccounts from Supabase
-      const { data: subaccounts, error } = await this.supabase
-        .from('subaccounts')
-        .select('id, api_key, secret_key, is_demo')
-        .eq('user_id', userId);
+      this.logger.log(`Fetching subaccounts for user: ${userId}`);
+
+      // Usar la función RPC en lugar de acceder directamente a la tabla
+      const { data: subaccounts, error } = await this.supabase.rpc('get_user_subaccounts', {
+        p_user_id: userId
+      });
 
       if (error) {
-        this.logger.error('Error fetching subaccounts from Supabase:', error);
-        throw new Error('Failed to fetch subaccounts');
+        this.logger.error('Error fetching subaccounts from Supabase RPC:', error);
+        throw new HttpException({
+          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+          message: 'Failed to fetch subaccounts',
+          error: error.message
+        }, HttpStatus.INTERNAL_SERVER_ERROR);
       }
 
       if (!subaccounts || subaccounts.length === 0) {
@@ -53,6 +59,11 @@ export class SubaccountsController {
       }
 
       this.logger.log(`Found ${subaccounts.length} subaccounts for user ${userId}`);
+      
+      // Log subaccount info (sin las API keys por seguridad)
+      subaccounts.forEach(sub => {
+        this.logger.log(`Subaccount: ${sub.name} (ID: ${sub.id}, Demo: ${sub.is_demo})`);
+      });
 
       // Get open positions from all subaccounts
       const operations = await this.subaccountsService.getOpenPerpetualOperations(subaccounts);
@@ -61,9 +72,19 @@ export class SubaccountsController {
 
       return { operations };
 
-    } catch (error) {
-      this.logger.error('Error in getAllOpenPerpetualOperations:', error);
-      throw error;
+    } catch (error: any) {
+      // Si es una HttpException, reenviarla tal cual
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      // Para otros errores, crear una HttpException con detalles
+      this.logger.error('Unexpected error in getAllOpenPerpetualOperations:', error);
+      throw new HttpException({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: 'Internal server error',
+        error: error.message || 'Unknown error occurred'
+      }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 } 
