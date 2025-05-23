@@ -26,65 +26,80 @@ export class SubaccountsController {
   }
 
   @Get('user/all-open-perpetual-operations')
-  async getAllOpenPerpetualOperations(@Request() req: any) {
+  @UseGuards(AuthGuard)
+  async getUserOpenPerpetualOperations(@Request() req: any) {
     try {
-      this.logger.log('GET /api/subaccounts/user/all-open-perpetual-operations');
-      
-      // Get user ID from the authenticated request
-      const userId = req.user?.id;
-      if (!userId) {
-        this.logger.error('User not authenticated - no user ID in request');
-        throw new HttpException('User not authenticated', HttpStatus.UNAUTHORIZED);
-      }
+      const userId = req.user.userId;
+      this.logger.log(`Getting open perpetual operations for user: ${userId}`);
 
-      this.logger.log(`Fetching subaccounts for user: ${userId}`);
-
-      // Usar la función RPC en lugar de acceder directamente a la tabla
-      const { data: subaccounts, error } = await this.supabase.rpc('get_user_subaccounts', {
-        p_user_id: userId
-      });
+      // Get user's subaccounts
+      const { data: subaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts', { p_user_id: userId });
 
       if (error) {
-        this.logger.error('Error fetching subaccounts from Supabase RPC:', error);
-        throw new HttpException({
-          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-          message: 'Failed to fetch subaccounts',
-          error: error.message
-        }, HttpStatus.INTERNAL_SERVER_ERROR);
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new Error(`Failed to fetch subaccounts: ${error.message}`);
       }
 
       if (!subaccounts || subaccounts.length === 0) {
         this.logger.log('No subaccounts found for user');
-        return { operations: [] };
+        return { operations: [], errors: [] };
       }
 
-      this.logger.log(`Found ${subaccounts.length} subaccounts for user ${userId}`);
-      
-      // Log subaccount info (sin las API keys por seguridad)
-      subaccounts.forEach(sub => {
-        this.logger.log(`Subaccount: ${sub.name} (ID: ${sub.id}, Demo: ${sub.is_demo})`);
+      this.logger.log(`Found ${subaccounts.length} subaccounts for user`);
+
+      // Obtener operaciones de todas las subcuentas en paralelo
+      const operationsPromises = subaccounts.map(async (subaccount: any) => {
+        try {
+          const operations = await this.subaccountsService.getOpenPerpetualOperations(subaccount);
+          return { success: true, operations, subaccountId: subaccount.id };
+        } catch (error: any) {
+          this.logger.error(`Error getting positions for subaccount ${subaccount.name}:`, {
+            error: error.message,
+            subaccountId: subaccount.id,
+            isDemo: subaccount.is_demo
+          });
+          
+          return { 
+            success: false, 
+            error: error.message, 
+            subaccountId: subaccount.id,
+            subaccountName: subaccount.name,
+            isDemo: subaccount.is_demo
+          };
+        }
       });
 
-      // Get open positions from all subaccounts
-      const operations = await this.subaccountsService.getOpenPerpetualOperations(subaccounts);
+      const results = await Promise.all(operationsPromises);
 
-      this.logger.log(`Retrieved ${operations.length} open operations`);
+      // Separar operaciones exitosas de errores
+      const successfulResults = results.filter(r => r.success);
+      const failedResults = results.filter(r => !r.success);
 
-      return { operations };
+      // Combinar todas las operaciones exitosas
+      const allOperations = successfulResults.flatMap(r => r.operations || []);
 
-    } catch (error: any) {
-      // Si es una HttpException, reenviarla tal cual
-      if (error instanceof HttpException) {
-        throw error;
-      }
+      this.logger.log(`Retrieved ${allOperations.length} open operations from ${successfulResults.length} subaccounts`);
       
-      // Para otros errores, crear una HttpException con detalles
-      this.logger.error('Unexpected error in getAllOpenPerpetualOperations:', error);
-      throw new HttpException({
-        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-        message: 'Internal server error',
-        error: error.message || 'Unknown error occurred'
-      }, HttpStatus.INTERNAL_SERVER_ERROR);
+      if (failedResults.length > 0) {
+        this.logger.warn(`Failed to get operations from ${failedResults.length} subaccounts`);
+      }
+
+      return { 
+        operations: allOperations,
+        errors: failedResults.map(r => ({
+          subaccountId: r.subaccountId,
+          subaccountName: r.subaccountName,
+          error: r.error,
+          isDemo: r.isDemo
+        })),
+        totalSubaccounts: subaccounts.length,
+        successfulSubaccounts: successfulResults.length,
+        failedSubaccounts: failedResults.length
+      };
+    } catch (error: any) {
+      this.logger.error('Error in getUserOpenPerpetualOperations:', error);
+      throw new Error(error.message || 'Internal server error');
     }
   }
 } 

@@ -53,37 +53,35 @@ export interface Operation {
 export class SubaccountsService {
   private readonly logger = new Logger(SubaccountsService.name);
 
-  private generateSignature(apiSecret: string, timestamp: number, params: string): string {
-    const message = timestamp + 'GET' + '/v5/position/list' + params;
+  private generateSignature(apiKey: string, apiSecret: string, timestamp: number, params: string): string {
+    // Para Bybit v5, el formato es: timestamp + api_key + recv_window + queryString
+    const recv_window = '5000';
+    const queryString = params.substring(1); // Quitar el '?' inicial
+    const message = `${timestamp}${apiKey}${recv_window}${queryString}`;
+    
     return crypto.createHmac('sha256', apiSecret).update(message).digest('hex');
   }
 
-  async getOpenPerpetualOperations(subaccounts: Array<{
+  async getOpenPerpetualOperations(subaccount: {
     id: string;
     api_key: string;
     secret_key: string;
     is_demo: boolean;
     name?: string;
-  }>): Promise<Operation[]> {
-    const allOperations: Operation[] = [];
-
-    for (const subaccount of subaccounts) {
-      try {
-        this.logger.log(`Getting positions for subaccount: ${subaccount.name || subaccount.id}`);
-        const operations = await this.getPositionsForSubaccount(subaccount);
-        allOperations.push(...operations);
-        this.logger.log(`Found ${operations.length} positions for subaccount: ${subaccount.name || subaccount.id}`);
-      } catch (error: any) {
-        this.logger.error(`Error getting positions for subaccount ${subaccount.name || subaccount.id}:`, {
-          error: error.message,
-          subaccountId: subaccount.id,
-          isDemo: subaccount.is_demo
-        });
-        // Continue with other subaccounts even if one fails
-      }
+  }): Promise<Operation[]> {
+    this.logger.log(`Getting positions for subaccount: ${subaccount.name || subaccount.id}`);
+    
+    try {
+      // For now, only Bybit is supported
+      return await this.getPositionsForSubaccount(subaccount);
+    } catch (error: any) {
+      this.logger.error(`Error getting positions for subaccount ${subaccount.name}:`, {
+        error: error.message,
+        subaccountId: subaccount.id,
+        isDemo: subaccount.is_demo
+      });
+      throw error;
     }
-
-    return allOperations;
   }
 
   private async getPositionsForSubaccount(subaccount: {
@@ -94,9 +92,15 @@ export class SubaccountsService {
     name?: string;
   }): Promise<Operation[]> {
     try {
+      // Validar que tenemos las claves necesarias
+      if (!subaccount.api_key || !subaccount.secret_key) {
+        this.logger.error(`Missing API credentials for subaccount ${subaccount.name}`);
+        throw new Error(`Missing API credentials for subaccount ${subaccount.name || subaccount.id}`);
+      }
+
       const timestamp = Date.now();
       const params = '?category=linear&settleCoin=USDT';
-      const signature = this.generateSignature(subaccount.secret_key, timestamp, params);
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, params);
 
       // Use testnet URL if it's a demo account
       const baseUrl = subaccount.is_demo 
@@ -105,7 +109,11 @@ export class SubaccountsService {
 
       this.logger.debug(`Calling Bybit API for ${subaccount.name || subaccount.id}:`, {
         url: `${baseUrl}/v5/position/list`,
-        isDemo: subaccount.is_demo
+        isDemo: subaccount.is_demo,
+        hasApiKey: !!subaccount.api_key,
+        hasSecretKey: !!subaccount.secret_key,
+        apiKeyLength: subaccount.api_key?.length,
+        timestamp
       });
 
       const response = await axios.get(`${baseUrl}/v5/position/list${params}`, {
@@ -122,9 +130,19 @@ export class SubaccountsService {
         this.logger.error(`Bybit API error for ${subaccount.name}:`, {
           retCode: response.data.retCode,
           retMsg: response.data.retMsg,
-          subaccountId: subaccount.id
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo
         });
-        throw new Error(`Bybit API error: ${response.data.retMsg} (code: ${response.data.retCode})`);
+        
+        // Mensajes de error más específicos según el código
+        let errorMessage = `Bybit API error: ${response.data.retMsg}`;
+        if (response.data.retCode === 10004) {
+          errorMessage = `Invalid signature for ${subaccount.name}. Please check API credentials.`;
+        } else if (response.data.retCode === 10003) {
+          errorMessage = `Invalid API key for ${subaccount.name}. Please check API credentials.`;
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const positions: BybitPosition[] = response.data.result?.list || [];
@@ -133,6 +151,13 @@ export class SubaccountsService {
       // Filter only positions with size > 0 (open positions)
       const openPositions = positions.filter(pos => parseFloat(pos.size) > 0);
       this.logger.log(`Found ${openPositions.length} open positions for ${subaccount.name}`);
+
+      // Log position details for debugging
+      if (openPositions.length > 0) {
+        openPositions.forEach(pos => {
+          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} PnL: ${pos.unrealisedPnl}`);
+        });
+      }
 
       // Transform Bybit positions to our Operation format
       return openPositions.map(position => ({
@@ -158,14 +183,19 @@ export class SubaccountsService {
       if (axios.isAxiosError(error)) {
         this.logger.error(`Axios error for subaccount ${subaccount.name || subaccount.id}:`, {
           status: error.response?.status,
+          statusText: error.response?.statusText,
           data: error.response?.data,
           message: error.message,
-          subaccountId: subaccount.id
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo
         });
         
         // Si es un error 401, probablemente las API keys son inválidas
         if (error.response?.status === 401) {
-          throw new Error(`Invalid API credentials for subaccount ${subaccount.name || subaccount.id}`);
+          const errorMsg = subaccount.is_demo 
+            ? `Invalid testnet API credentials for ${subaccount.name}. Please ensure you're using testnet.bybit.com API keys.`
+            : `Invalid API credentials for ${subaccount.name}. Please ensure you're using api.bybit.com API keys.`;
+          throw new Error(errorMsg);
         }
       }
       
