@@ -1,18 +1,29 @@
 import { Controller, Get, UseGuards, Request, Logger } from '@nestjs/common';
 import { SubaccountsService } from './subaccounts.service';
 import { AuthGuard } from '../auth.guard';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Controller('subaccounts')
 @UseGuards(AuthGuard)
 export class SubaccountsController {
   private readonly logger = new Logger(SubaccountsController.name);
-  private supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
+  private supabase: SupabaseClient;
 
-  constructor(private readonly subaccountsService: SubaccountsService) {}
+  constructor(private readonly subaccountsService: SubaccountsService) {
+    // Inicializar Supabase en el constructor
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      this.logger.error('Supabase configuration missing', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseKey
+      });
+      throw new Error('Supabase configuration is missing. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.');
+    }
+
+    this.supabase = createClient(supabaseUrl, supabaseKey);
+  }
 
   @Get('user/all-open-perpetual-operations')
   async getAllOpenPerpetualOperations(@Request() req: any) {
