@@ -14,7 +14,7 @@ export class AppController {
   getHealth() {
     return {
       status: 'OK',
-      timestamp: new Dsate().toISOString()
+      timestamp: new Date().toISOString()
     };
   }
 }
