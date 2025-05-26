@@ -17,12 +17,28 @@ export class SubaccountsController {
     if (!supabaseUrl || !supabaseKey) {
       this.logger.error('Supabase configuration missing', {
         hasUrl: !!supabaseUrl,
-        hasKey: !!supabaseKey
+        hasKey: !!supabaseKey,
+        envVars: {
+          SUPABASE_URL: !!process.env.SUPABASE_URL,
+          NEXT_PUBLIC_SUPABASE_URL: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+          SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+        }
       });
-      throw new Error('Supabase configuration is missing. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.');
+      
+      // No lanzar error aquí para evitar que la aplicación no arranque
+      // En su lugar, manejar el error cuando se intente usar el cliente
+      this.logger.warn('Supabase client not initialized due to missing configuration');
+      this.supabase = null as any;
+      return;
     }
 
-    this.supabase = createClient(supabaseUrl, supabaseKey);
+    try {
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+      this.logger.log('Supabase client initialized successfully');
+    } catch (error) {
+      this.logger.error('Error initializing Supabase client:', error);
+      this.supabase = null as any;
+    }
   }
 
   @Get('user/all-open-perpetual-operations')
@@ -32,13 +48,31 @@ export class SubaccountsController {
       const userId = req.user.userId;
       this.logger.log(`Getting open perpetual operations for user: ${userId}`);
 
+      // Verificar que la configuración de Supabase está correcta
+      if (!this.supabase) {
+        this.logger.error('Supabase client not initialized');
+        throw new HttpException('Database connection not available', HttpStatus.SERVICE_UNAVAILABLE);
+      }
+
       // Get user's subaccounts
       const { data: subaccounts, error } = await this.supabase
         .rpc('get_user_subaccounts', { p_user_id: userId });
 
       if (error) {
         this.logger.error('Error fetching user subaccounts:', error);
-        throw new Error(`Failed to fetch subaccounts: ${error.message}`);
+        
+        // Si es un error de función no encontrada, dar un mensaje más claro
+        if (error.message?.includes('function') && error.message?.includes('does not exist')) {
+          throw new HttpException(
+            'Database function not found. Please ensure database migrations are up to date.',
+            HttpStatus.SERVICE_UNAVAILABLE
+          );
+        }
+        
+        throw new HttpException(
+          `Failed to fetch subaccounts: ${error.message}`,
+          HttpStatus.BAD_REQUEST
+        );
       }
 
       if (!subaccounts || subaccounts.length === 0) {
@@ -99,7 +133,17 @@ export class SubaccountsController {
       };
     } catch (error: any) {
       this.logger.error('Error in getUserOpenPerpetualOperations:', error);
-      throw new Error(error.message || 'Internal server error');
+      
+      // Si ya es una HttpException, relanzarla
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      // De lo contrario, crear una nueva HttpException con el error
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
     }
   }
 } 
