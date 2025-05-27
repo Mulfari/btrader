@@ -46,64 +46,18 @@ export class SubaccountsController {
 
       // Supabase client is guaranteed to be initialized in constructor
 
-      // Get user's subaccounts directly from table and decrypt manually
-      // This approach avoids RPC function cache issues
-      const { data: rawSubaccounts, error: queryError } = await this.supabase
-        .from('subaccounts')
-        .select('id, name, api_key, secret_key, is_demo, created_at, updated_at')
-        .eq('user_id', userId);
+      // Use service role specific RPC function
+      const { data: subaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
 
-      if (queryError) {
-        this.logger.error('Error querying subaccounts table:', {
-          error: queryError,
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', {
+          error: error,
           userId: userId,
           userIdType: typeof userId
         });
-        throw new Error(`Failed to fetch subaccounts: ${queryError.message}`);
+        throw new Error(`Failed to fetch subaccounts: ${error.message}`);
       }
-
-      // Decrypt the API keys for each subaccount
-      const subaccounts: any[] = [];
-      for (const rawSub of rawSubaccounts || []) {
-        try {
-          // Get decrypted keys from vault
-          const { data: apiKeyData } = await this.supabase
-            .from('vault.decrypted_secrets')
-            .select('decrypted_secret')
-            .eq('name', rawSub.api_key)
-            .single();
-
-          const { data: secretKeyData } = await this.supabase
-            .from('vault.decrypted_secrets')
-            .select('decrypted_secret')
-            .eq('name', rawSub.secret_key)
-            .single();
-
-          subaccounts.push({
-            id: rawSub.id,
-            name: rawSub.name,
-            api_key: apiKeyData?.decrypted_secret || null,
-            secret_key: secretKeyData?.decrypted_secret || null,
-            is_demo: rawSub.is_demo,
-            created_at: rawSub.created_at,
-            updated_at: rawSub.updated_at
-          });
-        } catch (decryptError) {
-          this.logger.warn(`Failed to decrypt keys for subaccount ${rawSub.id}:`, decryptError);
-          // Include the subaccount but with null keys
-          subaccounts.push({
-            id: rawSub.id,
-            name: rawSub.name,
-            api_key: null,
-            secret_key: null,
-            is_demo: rawSub.is_demo,
-            created_at: rawSub.created_at,
-            updated_at: rawSub.updated_at
-          });
-        }
-      }
-
-      // Subaccounts retrieved successfully
 
       if (!subaccounts || subaccounts.length === 0) {
         this.logger.log('No subaccounts found for user');
