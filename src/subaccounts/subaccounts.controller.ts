@@ -54,9 +54,10 @@ export class SubaccountsController {
         throw new HttpException('Database connection not available', HttpStatus.SERVICE_UNAVAILABLE);
       }
 
-      // Get user's subaccounts
+      // Get user's subaccounts using the backend-specific function
+      // This function is designed to work with service role key
       const { data: subaccounts, error } = await this.supabase
-        .rpc('get_user_subaccounts', { p_user_id: userId });
+        .rpc('get_user_subaccounts_backend', { p_user_id: userId });
 
       if (error) {
         this.logger.error('Error fetching user subaccounts:', error);
