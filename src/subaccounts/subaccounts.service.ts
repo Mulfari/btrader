@@ -159,20 +159,60 @@ export class SubaccountsService {
       // Log position details for debugging
       if (openPositions.length > 0) {
         openPositions.forEach(pos => {
-          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} EntryPrice: ${pos.entryPrice} MarkPrice: ${pos.markPrice} LiqPrice: ${pos.liqPrice} PnL: ${pos.unrealisedPnl} PositionValue: ${pos.positionValue}`);
+          this.logger.debug(`Raw Position from Bybit:`, {
+            symbol: pos.symbol,
+            side: pos.side,
+            size: pos.size,
+            entryPrice: pos.entryPrice,
+            markPrice: pos.markPrice,
+            liqPrice: pos.liqPrice,
+            unrealisedPnl: pos.unrealisedPnl,
+            positionValue: pos.positionValue,
+            leverage: pos.leverage,
+            // Tipos de datos
+            entryPriceType: typeof pos.entryPrice,
+            liqPriceType: typeof pos.liqPrice,
+            positionValueType: typeof pos.positionValue
+          });
         });
       }
 
       // Transform Bybit positions to our Operation format
       return openPositions.map(position => {
         // Parsear valores con validación más estricta y logging detallado
-        const entryPrice = this.parseNumericValue(position.entryPrice, 'entryPrice');
+        let entryPrice = this.parseNumericValue(position.entryPrice, 'entryPrice');
         const size = this.parseNumericValue(position.size, 'size') || 0;
         const markPrice = this.parseNumericValue(position.markPrice, 'markPrice');
-        const liqPrice = this.parseNumericValue(position.liqPrice, 'liqPrice');
+        let liqPrice = this.parseNumericValue(position.liqPrice, 'liqPrice');
         const leverage = this.parseNumericValue(position.leverage, 'leverage') || 1;
         const unrealisedPnl = this.parseNumericValue(position.unrealisedPnl, 'unrealisedPnl') || 0;
         const positionValue = this.parseNumericValue(position.positionValue, 'positionValue');
+
+        // Si entryPrice no está disponible, intentar calcularlo desde positionValue y size
+        if (entryPrice === null && positionValue !== null && size > 0) {
+          entryPrice = positionValue / size;
+          this.logger.debug(`Calculated entryPrice from positionValue/size: ${entryPrice}`);
+        }
+
+        // Si aún no tenemos entryPrice, usar markPrice como fallback
+        if (entryPrice === null && markPrice !== null) {
+          entryPrice = markPrice;
+          this.logger.debug(`Using markPrice as entryPrice fallback: ${entryPrice}`);
+        }
+
+        // Si no tenemos liquidation price, intentar calcularlo aproximadamente
+        if (liqPrice === null && entryPrice !== null && leverage > 1) {
+          // Cálculo aproximado del precio de liquidación
+          const isLong = position.side === 'Buy';
+          if (isLong) {
+            // Para long: liqPrice = entryPrice * (1 - 1/leverage)
+            liqPrice = entryPrice * (1 - 1/leverage);
+          } else {
+            // Para short: liqPrice = entryPrice * (1 + 1/leverage)
+            liqPrice = entryPrice * (1 + 1/leverage);
+          }
+          this.logger.debug(`Calculated approximate liquidation price: ${liqPrice}`);
+        }
         const createdTime = parseInt(position.createdTime) || Date.now();
 
         // Calcular el porcentaje de ganancia/pérdida
@@ -242,18 +282,35 @@ export class SubaccountsService {
   }
 
   private parseNumericValue(value: string | undefined, fieldName: string): number | null {
-    if (!value || value === '' || value === '0') {
-      this.logger.debug(`Field ${fieldName} is empty or zero: "${value}"`);
+    this.logger.debug(`Parsing ${fieldName}: value="${value}", type=${typeof value}`);
+    
+    // Si el valor es undefined, null, o cadena vacía, devolver null
+    if (value === undefined || value === null || value === '') {
+      this.logger.debug(`Field ${fieldName} is undefined/null/empty: "${value}"`);
       return null;
     }
     
-    const parsed = parseFloat(value);
+    // Convertir a string si no lo es ya
+    const stringValue = String(value);
+    
+    // Si es exactamente '0', devolver 0 (no null) para algunos campos específicos
+    if (stringValue === '0') {
+      if (fieldName === 'entryPrice' || fieldName === 'liqPrice') {
+        this.logger.debug(`Field ${fieldName} is zero, returning null for price field`);
+        return null;
+      } else {
+        this.logger.debug(`Field ${fieldName} is zero, returning 0`);
+        return 0;
+      }
+    }
+    
+    const parsed = parseFloat(stringValue);
     if (isNaN(parsed)) {
-      this.logger.warn(`Field ${fieldName} could not be parsed: "${value}"`);
+      this.logger.warn(`Field ${fieldName} could not be parsed: "${stringValue}"`);
       return null;
     }
     
-    this.logger.debug(`Field ${fieldName} parsed successfully: "${value}" -> ${parsed}`);
+    this.logger.debug(`Field ${fieldName} parsed successfully: "${stringValue}" -> ${parsed}`);
     return parsed;
   }
 
