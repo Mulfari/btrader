@@ -17,28 +17,12 @@ export class SubaccountsController {
     if (!supabaseUrl || !supabaseKey) {
       this.logger.error('Supabase configuration missing', {
         hasUrl: !!supabaseUrl,
-        hasKey: !!supabaseKey,
-        envVars: {
-          SUPABASE_URL: !!process.env.SUPABASE_URL,
-          NEXT_PUBLIC_SUPABASE_URL: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-          SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY
-        }
+        hasKey: !!supabaseKey
       });
-      
-      // No lanzar error aquí para evitar que la aplicación no arranque
-      // En su lugar, manejar el error cuando se intente usar el cliente
-      this.logger.warn('Supabase client not initialized due to missing configuration');
-      this.supabase = null as any;
-      return;
+      throw new Error('Supabase configuration is missing. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.');
     }
 
-    try {
-      this.supabase = createClient(supabaseUrl, supabaseKey);
-      this.logger.log('Supabase client initialized successfully');
-    } catch (error) {
-      this.logger.error('Error initializing Supabase client:', error);
-      this.supabase = null as any;
-    }
+    this.supabase = createClient(supabaseUrl, supabaseKey);
   }
 
   @Get('user/all-open-perpetual-operations')
@@ -48,33 +32,62 @@ export class SubaccountsController {
       const userId = req.user.userId;
       this.logger.log(`Getting open perpetual operations for user: ${userId}`);
 
-      // Verificar que la configuración de Supabase está correcta
-      if (!this.supabase) {
-        this.logger.error('Supabase client not initialized');
-        throw new HttpException('Database connection not available', HttpStatus.SERVICE_UNAVAILABLE);
+      // Supabase client is guaranteed to be initialized in constructor
+
+      // Get user's subaccounts directly from table and decrypt manually
+      // This approach avoids RPC function cache issues
+      const { data: rawSubaccounts, error: queryError } = await this.supabase
+        .from('subaccounts')
+        .select('id, name, api_key, secret_key, is_demo, created_at, updated_at')
+        .eq('user_id', userId);
+
+      if (queryError) {
+        this.logger.error('Error querying subaccounts table:', queryError);
+        throw new Error(`Failed to fetch subaccounts: ${queryError.message}`);
       }
 
-      // Get user's subaccounts using the backend-specific function
-      // This function is designed to work with service role key
-      const { data: subaccounts, error } = await this.supabase
-        .rpc('get_user_subaccounts_backend', { p_user_id: userId });
+      // Decrypt the API keys for each subaccount
+      const subaccounts: any[] = [];
+      for (const rawSub of rawSubaccounts || []) {
+        try {
+          // Get decrypted keys from vault
+          const { data: apiKeyData } = await this.supabase
+            .from('vault.decrypted_secrets')
+            .select('decrypted_secret')
+            .eq('name', rawSub.api_key)
+            .single();
 
-      if (error) {
-        this.logger.error('Error fetching user subaccounts:', error);
-        
-        // Si es un error de función no encontrada, dar un mensaje más claro
-        if (error.message?.includes('function') && error.message?.includes('does not exist')) {
-          throw new HttpException(
-            'Database function not found. Please ensure database migrations are up to date.',
-            HttpStatus.SERVICE_UNAVAILABLE
-          );
+          const { data: secretKeyData } = await this.supabase
+            .from('vault.decrypted_secrets')
+            .select('decrypted_secret')
+            .eq('name', rawSub.secret_key)
+            .single();
+
+          subaccounts.push({
+            id: rawSub.id,
+            name: rawSub.name,
+            api_key: apiKeyData?.decrypted_secret || null,
+            secret_key: secretKeyData?.decrypted_secret || null,
+            is_demo: rawSub.is_demo,
+            created_at: rawSub.created_at,
+            updated_at: rawSub.updated_at
+          });
+        } catch (decryptError) {
+          this.logger.warn(`Failed to decrypt keys for subaccount ${rawSub.id}:`, decryptError);
+          // Include the subaccount but with null keys
+          subaccounts.push({
+            id: rawSub.id,
+            name: rawSub.name,
+            api_key: null,
+            secret_key: null,
+            is_demo: rawSub.is_demo,
+            created_at: rawSub.created_at,
+            updated_at: rawSub.updated_at
+          });
         }
-        
-        throw new HttpException(
-          `Failed to fetch subaccounts: ${error.message}`,
-          HttpStatus.BAD_REQUEST
-        );
       }
+
+      // Subaccounts retrieved successfully
 
       if (!subaccounts || subaccounts.length === 0) {
         this.logger.log('No subaccounts found for user');
