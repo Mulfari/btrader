@@ -155,29 +155,44 @@ export class SubaccountsService {
       // Log position details for debugging
       if (openPositions.length > 0) {
         openPositions.forEach(pos => {
-          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} PnL: ${pos.unrealisedPnl}`);
+          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} EntryPrice: ${pos.entryPrice} PnL: ${pos.unrealisedPnl}`);
         });
       }
 
       // Transform Bybit positions to our Operation format
-      return openPositions.map(position => ({
-        id: `${subaccount.id}-${position.symbol}-${position.side}`,
-        subAccountId: subaccount.id,
-        symbol: position.symbol.replace('USDT', ''), // Remove USDT suffix
-        side: position.side === 'Buy' ? 'buy' : 'sell' as const,
-        status: 'open' as const,
-        price: parseFloat(position.entryPrice),
-        quantity: parseFloat(position.size),
-        leverage: parseFloat(position.leverage),
-        openTime: new Date(parseInt(position.createdTime)),
-        profit: parseFloat(position.unrealisedPnl),
-        profitPercentage: this.calculateProfitPercentage(
-          parseFloat(position.entryPrice),
-          parseFloat(position.markPrice),
-          position.side === 'Buy'
-        ),
-        exchange: 'Bybit',
-      }));
+      return openPositions.map(position => {
+        const entryPrice = parseFloat(position.entryPrice) || 0;
+        const size = parseFloat(position.size) || 0;
+        const markPrice = parseFloat(position.markPrice) || 0;
+        const leverage = parseFloat(position.leverage) || 1;
+        const unrealisedPnl = parseFloat(position.unrealisedPnl) || 0;
+        const createdTime = parseInt(position.createdTime) || Date.now();
+
+        this.logger.debug(`Transforming position for ${subaccount.name}:`, {
+          symbol: position.symbol,
+          entryPrice,
+          size,
+          markPrice,
+          leverage,
+          unrealisedPnl,
+          createdTime
+        });
+
+        return {
+          id: `${subaccount.id}-${position.symbol}-${position.side}`,
+          subAccountId: subaccount.id,
+          symbol: position.symbol.replace('USDT', ''), // Remove USDT suffix
+          side: position.side === 'Buy' ? 'buy' : 'sell' as const,
+          status: 'open' as const,
+          price: entryPrice,
+          quantity: size,
+          leverage: leverage,
+          openTime: new Date(createdTime),
+          profit: unrealisedPnl,
+          profitPercentage: this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy'),
+          exchange: 'Bybit',
+        };
+      });
 
     } catch (error: any) {
       if (axios.isAxiosError(error)) {
