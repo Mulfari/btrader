@@ -29,7 +29,19 @@ export class SubaccountsController {
   @UseGuards(AuthGuard)
   async getUserOpenPerpetualOperations(@Request() req: any) {
     try {
-      const userId = req.user.userId;
+      const userId = req.user.id;
+      
+      this.logger.debug('User object from request:', {
+        user: req.user,
+        userId: userId,
+        userIdType: typeof userId
+      });
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+      
       this.logger.log(`Getting open perpetual operations for user: ${userId}`);
 
       // Supabase client is guaranteed to be initialized in constructor
@@ -42,7 +54,11 @@ export class SubaccountsController {
         .eq('user_id', userId);
 
       if (queryError) {
-        this.logger.error('Error querying subaccounts table:', queryError);
+        this.logger.error('Error querying subaccounts table:', {
+          error: queryError,
+          userId: userId,
+          userIdType: typeof userId
+        });
         throw new Error(`Failed to fetch subaccounts: ${queryError.message}`);
       }
 
