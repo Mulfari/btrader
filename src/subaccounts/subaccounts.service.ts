@@ -155,7 +155,7 @@ export class SubaccountsService {
       // Log position details for debugging
       if (openPositions.length > 0) {
         openPositions.forEach(pos => {
-          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} EntryPrice: ${pos.entryPrice} PnL: ${pos.unrealisedPnl}`);
+          this.logger.debug(`Position: ${pos.symbol} ${pos.side} Size: ${pos.size} EntryPrice: ${pos.entryPrice} MarkPrice: ${pos.markPrice} LiqPrice: ${pos.liqPrice} PnL: ${pos.unrealisedPnl} PositionValue: ${pos.positionValue}`);
         });
       }
 
@@ -164,17 +164,25 @@ export class SubaccountsService {
         const entryPrice = parseFloat(position.entryPrice) || 0;
         const size = parseFloat(position.size) || 0;
         const markPrice = parseFloat(position.markPrice) || 0;
+        const liqPrice = parseFloat(position.liqPrice) || 0;
         const leverage = parseFloat(position.leverage) || 1;
         const unrealisedPnl = parseFloat(position.unrealisedPnl) || 0;
+        const positionValue = parseFloat(position.positionValue) || 0;
         const createdTime = parseInt(position.createdTime) || Date.now();
+
+        // Calcular el porcentaje de ganancia/pérdida
+        const profitPercentage = this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy');
 
         this.logger.debug(`Transforming position for ${subaccount.name}:`, {
           symbol: position.symbol,
           entryPrice,
           size,
           markPrice,
+          liqPrice,
           leverage,
           unrealisedPnl,
+          positionValue,
+          profitPercentage,
           createdTime
         });
 
@@ -184,13 +192,17 @@ export class SubaccountsService {
           symbol: position.symbol.replace('USDT', ''), // Remove USDT suffix
           side: position.side === 'Buy' ? 'buy' : 'sell' as const,
           status: 'open' as const,
-          price: entryPrice,
-          quantity: size,
-          leverage: leverage,
+          price: entryPrice, // Precio de entrada
+          quantity: size, // Cantidad
+          leverage: leverage, // Apalancamiento
           openTime: new Date(createdTime),
-          profit: unrealisedPnl,
-          profitPercentage: this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy'),
+          profit: unrealisedPnl, // Ganancia/pérdida en USDT
+          profitPercentage: profitPercentage, // Porcentaje de ganancia/pérdida
           exchange: 'Bybit',
+          // Campos adicionales específicos de futuros
+          markPrice: markPrice, // Precio actual del mercado
+          liquidationPrice: liqPrice, // Precio de liquidación
+          positionValue: positionValue, // Valor total de la posición
         };
       });
 
