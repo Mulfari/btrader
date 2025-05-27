@@ -36,7 +36,7 @@ export interface Operation {
   symbol: string;
   side: 'buy' | 'sell';
   status: 'open' | 'closed' | 'canceled';
-  price: number;
+  price: number | null;
   quantity: number;
   filledQuantity?: number;
   remainingQuantity?: number;
@@ -48,9 +48,9 @@ export interface Operation {
   fee?: number;
   exchange: string;
   // Campos adicionales para futuros
-  markPrice?: number;
-  liquidationPrice?: number;
-  positionValue?: number;
+  markPrice?: number | null;
+  liquidationPrice?: number | null;
+  positionValue?: number | null;
 }
 
 @Injectable()
@@ -165,18 +165,18 @@ export class SubaccountsService {
 
       // Transform Bybit positions to our Operation format
       return openPositions.map(position => {
-        // Parsear valores con validación más estricta
-        const entryPrice = position.entryPrice && position.entryPrice !== '0' ? parseFloat(position.entryPrice) : 0;
-        const size = position.size && position.size !== '0' ? parseFloat(position.size) : 0;
-        const markPrice = position.markPrice && position.markPrice !== '0' ? parseFloat(position.markPrice) : 0;
-        const liqPrice = position.liqPrice && position.liqPrice !== '0' ? parseFloat(position.liqPrice) : 0;
-        const leverage = position.leverage && position.leverage !== '0' ? parseFloat(position.leverage) : 1;
-        const unrealisedPnl = position.unrealisedPnl ? parseFloat(position.unrealisedPnl) : 0;
-        const positionValue = position.positionValue && position.positionValue !== '0' ? parseFloat(position.positionValue) : 0;
+        // Parsear valores con validación más estricta y logging detallado
+        const entryPrice = this.parseNumericValue(position.entryPrice, 'entryPrice');
+        const size = this.parseNumericValue(position.size, 'size') || 0;
+        const markPrice = this.parseNumericValue(position.markPrice, 'markPrice');
+        const liqPrice = this.parseNumericValue(position.liqPrice, 'liqPrice');
+        const leverage = this.parseNumericValue(position.leverage, 'leverage') || 1;
+        const unrealisedPnl = this.parseNumericValue(position.unrealisedPnl, 'unrealisedPnl') || 0;
+        const positionValue = this.parseNumericValue(position.positionValue, 'positionValue');
         const createdTime = parseInt(position.createdTime) || Date.now();
 
         // Calcular el porcentaje de ganancia/pérdida
-        const profitPercentage = entryPrice && markPrice 
+        const profitPercentage = entryPrice !== null && markPrice !== null 
           ? this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy')
           : 0;
 
@@ -203,7 +203,7 @@ export class SubaccountsService {
           symbol: position.symbol.replace('USDT', ''), // Remove USDT suffix
           side: position.side === 'Buy' ? 'buy' : 'sell' as const,
           status: 'open' as const,
-          price: entryPrice, // Precio de entrada
+          price: entryPrice, // Precio de entrada (puede ser null si no está disponible)
           quantity: size, // Cantidad
           leverage: leverage, // Apalancamiento
           openTime: new Date(createdTime),
@@ -211,9 +211,9 @@ export class SubaccountsService {
           profitPercentage: profitPercentage, // Porcentaje de ganancia/pérdida
           exchange: 'Bybit',
           // Campos adicionales específicos de futuros
-          markPrice: markPrice > 0 ? markPrice : undefined, // Precio actual del mercado
-          liquidationPrice: liqPrice > 0 ? liqPrice : undefined, // Precio de liquidación
-          positionValue: positionValue > 0 ? positionValue : undefined, // Valor total de la posición
+          markPrice: markPrice !== null && markPrice > 0 ? markPrice : undefined, // Precio actual del mercado
+          liquidationPrice: liqPrice !== null && liqPrice > 0 ? liqPrice : undefined, // Precio de liquidación
+          positionValue: positionValue !== null && positionValue > 0 ? positionValue : undefined, // Valor total de la posición
         };
       });
 
@@ -239,6 +239,22 @@ export class SubaccountsService {
       
       throw error;
     }
+  }
+
+  private parseNumericValue(value: string | undefined, fieldName: string): number | null {
+    if (!value || value === '' || value === '0') {
+      this.logger.debug(`Field ${fieldName} is empty or zero: "${value}"`);
+      return null;
+    }
+    
+    const parsed = parseFloat(value);
+    if (isNaN(parsed)) {
+      this.logger.warn(`Field ${fieldName} could not be parsed: "${value}"`);
+      return null;
+    }
+    
+    this.logger.debug(`Field ${fieldName} parsed successfully: "${value}" -> ${parsed}`);
+    return parsed;
   }
 
   private calculateProfitPercentage(entryPrice: number, markPrice: number, isLong: boolean): number {
