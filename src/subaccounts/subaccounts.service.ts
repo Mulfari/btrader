@@ -47,6 +47,10 @@ export interface Operation {
   profitPercentage?: number;
   fee?: number;
   exchange: string;
+  // Campos adicionales para futuros
+  markPrice?: number;
+  liquidationPrice?: number;
+  positionValue?: number;
 }
 
 @Injectable()
@@ -161,19 +165,22 @@ export class SubaccountsService {
 
       // Transform Bybit positions to our Operation format
       return openPositions.map(position => {
-        const entryPrice = parseFloat(position.entryPrice) || 0;
-        const size = parseFloat(position.size) || 0;
-        const markPrice = parseFloat(position.markPrice) || 0;
-        const liqPrice = parseFloat(position.liqPrice) || 0;
-        const leverage = parseFloat(position.leverage) || 1;
-        const unrealisedPnl = parseFloat(position.unrealisedPnl) || 0;
-        const positionValue = parseFloat(position.positionValue) || 0;
+        // Parsear valores con validación más estricta
+        const entryPrice = position.entryPrice && position.entryPrice !== '0' ? parseFloat(position.entryPrice) : 0;
+        const size = position.size && position.size !== '0' ? parseFloat(position.size) : 0;
+        const markPrice = position.markPrice && position.markPrice !== '0' ? parseFloat(position.markPrice) : 0;
+        const liqPrice = position.liqPrice && position.liqPrice !== '0' ? parseFloat(position.liqPrice) : 0;
+        const leverage = position.leverage && position.leverage !== '0' ? parseFloat(position.leverage) : 1;
+        const unrealisedPnl = position.unrealisedPnl ? parseFloat(position.unrealisedPnl) : 0;
+        const positionValue = position.positionValue && position.positionValue !== '0' ? parseFloat(position.positionValue) : 0;
         const createdTime = parseInt(position.createdTime) || Date.now();
 
         // Calcular el porcentaje de ganancia/pérdida
-        const profitPercentage = this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy');
+        const profitPercentage = entryPrice && markPrice 
+          ? this.calculateProfitPercentage(entryPrice, markPrice, position.side === 'Buy')
+          : 0;
 
-        this.logger.debug(`Transforming position for ${subaccount.name}:`, {
+        this.logger.log(`Transforming position for ${subaccount.name}:`, {
           symbol: position.symbol,
           entryPrice,
           size,
@@ -183,7 +190,11 @@ export class SubaccountsService {
           unrealisedPnl,
           positionValue,
           profitPercentage,
-          createdTime
+          createdTime,
+          // Datos originales de Bybit para debugging
+          originalEntryPrice: position.entryPrice,
+          originalLiqPrice: position.liqPrice,
+          originalPositionValue: position.positionValue
         });
 
         return {
@@ -200,9 +211,9 @@ export class SubaccountsService {
           profitPercentage: profitPercentage, // Porcentaje de ganancia/pérdida
           exchange: 'Bybit',
           // Campos adicionales específicos de futuros
-          markPrice: markPrice, // Precio actual del mercado
-          liquidationPrice: liqPrice, // Precio de liquidación
-          positionValue: positionValue, // Valor total de la posición
+          markPrice: markPrice > 0 ? markPrice : undefined, // Precio actual del mercado
+          liquidationPrice: liqPrice > 0 ? liqPrice : undefined, // Precio de liquidación
+          positionValue: positionValue > 0 ? positionValue : undefined, // Valor total de la posición
         };
       });
 
