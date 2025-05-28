@@ -37,6 +37,29 @@ export interface PerpetualMarketTicker {
   favorite: boolean;
 }
 
+export interface OrderBookLevel3Entry {
+  price: string;
+  size: string;
+  side: 'buy' | 'sell';
+  id?: string;
+}
+
+export interface OrderBookLevel3 {
+  symbol: string;
+  bids: OrderBookLevel3Entry[];
+  asks: OrderBookLevel3Entry[];
+  timestamp: number;
+  updateId?: number;
+}
+
+export interface OrderBookSnapshot {
+  symbol: string;
+  bids: [string, string][];  // [price, size]
+  asks: [string, string][];  // [price, size]
+  timestamp: number;
+  updateId: number;
+}
+
 @Injectable()
 export class MarketService {
   private readonly logger = new Logger(MarketService.name);
@@ -285,5 +308,93 @@ export class MarketService {
       this.logger.error(`Error al obtener orderbook para ${symbol}:`, error);
       return null;
     }
+  }
+
+  // Método para obtener order book nivel 3 (snapshot completo)
+  async getOrderBookLevel3(symbol: string, category: 'spot' | 'linear' = 'spot', limit: number = 50): Promise<OrderBookLevel3 | null> {
+    try {
+      this.logger.log(`Obteniendo order book nivel 3 para ${symbol}`);
+      
+      const response = await axios.get(`${this.bybitBaseUrl}/market/orderbook`, {
+        params: {
+          category,
+          symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+          limit: Math.min(limit, 200) // Bybit permite máximo 200
+        },
+        timeout: 5000
+      });
+
+      if (!response.data?.result) {
+        return null;
+      }
+
+      const result = response.data.result;
+      
+      // Transformar los datos al formato de nivel 3
+      const orderBook: OrderBookLevel3 = {
+        symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+        bids: result.b?.map((bid: [string, string], index: number) => ({
+          price: bid[0],
+          size: bid[1],
+          side: 'buy' as const,
+          id: `bid_${index}_${bid[0]}`
+        })) || [],
+        asks: result.a?.map((ask: [string, string], index: number) => ({
+          price: ask[0],
+          size: ask[1],
+          side: 'sell' as const,
+          id: `ask_${index}_${ask[0]}`
+        })) || [],
+        timestamp: parseInt(result.ts) || Date.now(),
+        updateId: parseInt(result.u) || 0
+      };
+
+      // Ordenar bids de mayor a menor precio y asks de menor a mayor precio
+      orderBook.bids.sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
+      orderBook.asks.sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+
+      this.logger.log(`Order book nivel 3 obtenido: ${orderBook.bids.length} bids, ${orderBook.asks.length} asks`);
+      return orderBook;
+
+    } catch (error) {
+      this.logger.error(`Error al obtener order book nivel 3 para ${symbol}:`, error);
+      return null;
+    }
+  }
+
+  // Método para obtener múltiples order books
+  async getMultipleOrderBooks(symbols: string[], category: 'spot' | 'linear' = 'spot', limit: number = 25): Promise<OrderBookLevel3[]> {
+    try {
+      const promises = symbols.map(symbol => this.getOrderBookLevel3(symbol, category, limit));
+      const results = await Promise.allSettled(promises);
+      
+      return results
+        .filter((result): result is PromiseFulfilledResult<OrderBookLevel3> => 
+          result.status === 'fulfilled' && result.value !== null
+        )
+        .map(result => result.value);
+    } catch (error) {
+      this.logger.error('Error al obtener múltiples order books:', error);
+      return [];
+    }
+  }
+
+  // Método para obtener el spread del order book
+  getOrderBookSpread(orderBook: OrderBookLevel3): { spread: number; spreadPercent: number; midPrice: number } | null {
+    if (orderBook.bids.length === 0 || orderBook.asks.length === 0) {
+      return null;
+    }
+
+    const bestBid = parseFloat(orderBook.bids[0].price);
+    const bestAsk = parseFloat(orderBook.asks[0].price);
+    const spread = bestAsk - bestBid;
+    const midPrice = (bestBid + bestAsk) / 2;
+    const spreadPercent = (spread / midPrice) * 100;
+
+    return {
+      spread,
+      spreadPercent,
+      midPrice
+    };
   }
 } 
