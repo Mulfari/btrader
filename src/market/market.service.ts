@@ -60,6 +60,39 @@ export interface OrderBookSnapshot {
   updateId: number;
 }
 
+// Nuevas interfaces para los widgets
+export interface LongShortRatioData {
+  symbol: string;
+  buyRatio: string;
+  sellRatio: string;
+  timestamp: string;
+}
+
+export interface OpenInterestData {
+  symbol: string;
+  openInterest: string;
+  timestamp: string;
+}
+
+export interface VolumeData {
+  symbol: string;
+  timestamp: string;
+  volume: string;
+  turnover: string;
+  openPrice: string;
+  closePrice: string;
+  highPrice: string;
+  lowPrice: string;
+}
+
+export interface LiquidationData {
+  symbol: string;
+  side: 'Buy' | 'Sell';
+  size: string;
+  price: string;
+  time: number;
+}
+
 @Injectable()
 export class MarketService {
   private readonly logger = new Logger(MarketService.name);
@@ -396,5 +429,219 @@ export class MarketService {
       spreadPercent,
       midPrice
     };
+  }
+
+  // Método para obtener Long/Short Ratio
+  async getLongShortRatio(
+    symbol: string, 
+    period: '5min' | '15min' | '30min' | '1h' | '4h' | '1d' = '1h',
+    limit: number = 50,
+    startTime?: number,
+    endTime?: number
+  ): Promise<LongShortRatioData[]> {
+    try {
+      this.logger.log(`Obteniendo Long/Short Ratio para ${symbol}`);
+      
+      const params: any = {
+        category: 'linear',
+        symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+        period,
+        limit: Math.min(limit, 500)
+      };
+
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+
+      const response = await axios.get(`${this.bybitBaseUrl}/market/account-ratio`, {
+        params,
+        timeout: 10000
+      });
+
+      if (!response.data?.result?.list) {
+        return [];
+      }
+
+      return response.data.result.list.map((item: any) => ({
+        symbol: item.symbol,
+        buyRatio: item.buyRatio,
+        sellRatio: item.sellRatio,
+        timestamp: item.timestamp
+      }));
+
+    } catch (error) {
+      this.logger.error(`Error al obtener Long/Short Ratio para ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  // Método para obtener Open Interest histórico
+  async getOpenInterest(
+    symbol: string,
+    intervalTime: '5min' | '15min' | '30min' | '1h' | '4h' | '1d' = '1h',
+    limit: number = 50,
+    startTime?: number,
+    endTime?: number
+  ): Promise<OpenInterestData[]> {
+    try {
+      this.logger.log(`Obteniendo Open Interest para ${symbol}`);
+      
+      const params: any = {
+        category: 'linear',
+        symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+        intervalTime,
+        limit: Math.min(limit, 200)
+      };
+
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+
+      const response = await axios.get(`${this.bybitBaseUrl}/market/open-interest`, {
+        params,
+        timeout: 10000
+      });
+
+      if (!response.data?.result?.list) {
+        return [];
+      }
+
+      return response.data.result.list.map((item: any) => ({
+        symbol: response.data.result.symbol,
+        openInterest: item.openInterest,
+        timestamp: item.timestamp
+      }));
+
+    } catch (error) {
+      this.logger.error(`Error al obtener Open Interest para ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  // Método para obtener datos de volumen histórico
+  async getVolumeData(
+    symbol: string,
+    interval: '1' | '3' | '5' | '15' | '30' | '60' | '120' | '240' | '360' | '720' | 'D' | 'W' | 'M' = '60',
+    limit: number = 50,
+    start?: number,
+    end?: number
+  ): Promise<VolumeData[]> {
+    try {
+      this.logger.log(`Obteniendo datos de volumen para ${symbol}`);
+      
+      const params: any = {
+        category: 'linear',
+        symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+        interval,
+        limit: Math.min(limit, 1000)
+      };
+
+      if (start) params.start = start;
+      if (end) params.end = end;
+
+      const response = await axios.get(`${this.bybitBaseUrl}/market/kline`, {
+        params,
+        timeout: 10000
+      });
+
+      if (!response.data?.result?.list) {
+        return [];
+      }
+
+      return response.data.result.list.map((item: any) => ({
+        symbol: response.data.result.symbol,
+        timestamp: item[0], // startTime
+        openPrice: item[1],
+        highPrice: item[2],
+        lowPrice: item[3],
+        closePrice: item[4],
+        volume: item[5],
+        turnover: item[6]
+      }));
+
+    } catch (error) {
+      this.logger.error(`Error al obtener datos de volumen para ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  // Método para obtener datos de múltiples símbolos para widgets
+  async getMultiSymbolData(symbols: string[], dataType: 'longShort' | 'openInterest' | 'volume'): Promise<any[]> {
+    try {
+      const promises = symbols.map(symbol => {
+        switch (dataType) {
+          case 'longShort':
+            return this.getLongShortRatio(symbol, '1h', 24);
+          case 'openInterest':
+            return this.getOpenInterest(symbol, '1h', 24);
+          case 'volume':
+            return this.getVolumeData(symbol, '60', 24);
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const results = await Promise.allSettled(promises);
+      
+      return results
+        .filter((result): result is PromiseFulfilledResult<any[]> => 
+          result.status === 'fulfilled'
+        )
+        .map(result => result.value)
+        .flat();
+    } catch (error) {
+      this.logger.error(`Error al obtener datos múltiples para ${dataType}:`, error);
+      return [];
+    }
+  }
+
+  // Método para obtener resumen de liquidaciones (simulado ya que necesita WebSocket)
+  async getLiquidationSummary(symbol: string): Promise<{
+    symbol: string;
+    longLiquidations24h: string;
+    shortLiquidations24h: string;
+    totalLiquidations24h: string;
+    lastUpdate: number;
+  }> {
+    try {
+      // Nota: Las liquidaciones en tiempo real requieren WebSocket
+      // Por ahora retornamos datos simulados basados en volatilidad del mercado
+      const ticker = await this.getTickerBySymbol(symbol, 'linear');
+      
+      if (!ticker) {
+        return {
+          symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+          longLiquidations24h: '0',
+          shortLiquidations24h: '0',
+          totalLiquidations24h: '0',
+          lastUpdate: Date.now()
+        };
+      }
+
+      // Estimar liquidaciones basado en el cambio de precio y volumen
+      const priceChange = Math.abs(parseFloat(ticker.price24hPcnt || '0'));
+      const volume24h = parseFloat(ticker.turnover24h || '0');
+      
+      // Estimación simple: mayor volatilidad = más liquidaciones
+      const estimatedLiquidations = Math.floor(volume24h * priceChange * 0.001);
+      const longLiq = Math.floor(estimatedLiquidations * 0.6); // Asumimos más longs liquidados en caídas
+      const shortLiq = estimatedLiquidations - longLiq;
+
+      return {
+        symbol: ticker.symbol,
+        longLiquidations24h: longLiq.toString(),
+        shortLiquidations24h: shortLiq.toString(),
+        totalLiquidations24h: estimatedLiquidations.toString(),
+        lastUpdate: Date.now()
+      };
+
+    } catch (error) {
+      this.logger.error(`Error al obtener resumen de liquidaciones para ${symbol}:`, error);
+      return {
+        symbol: symbol.includes('USDT') ? symbol : `${symbol}USDT`,
+        longLiquidations24h: '0',
+        shortLiquidations24h: '0',
+        totalLiquidations24h: '0',
+        lastUpdate: Date.now()
+      };
+    }
   }
 } 
