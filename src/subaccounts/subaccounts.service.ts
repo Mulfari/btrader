@@ -188,30 +188,54 @@ export class SubaccountsService {
         const unrealisedPnl = this.parseNumericValue(position.unrealisedPnl, 'unrealisedPnl') || 0;
         const positionValue = this.parseNumericValue(position.positionValue, 'positionValue');
 
-        // Si entryPrice no está disponible, intentar calcularlo desde positionValue y size
+        // Calcular precio de entrada dinámicamente
+        // Prioridad: 1) entryPrice de Bybit, 2) calculado desde PnL y markPrice, 3) positionValue/size, 4) markPrice actual
+        if (entryPrice === null && markPrice !== null && size > 0 && unrealisedPnl !== 0) {
+          // Calcular entryPrice basado en PnL: entryPrice = markPrice - (PnL / size)
+          const isLong = position.side === 'Buy';
+          if (isLong) {
+            entryPrice = markPrice - (unrealisedPnl / size);
+          } else {
+            entryPrice = markPrice + (unrealisedPnl / size);
+          }
+          this.logger.debug(`Calculated entryPrice from PnL and markPrice: ${entryPrice}`);
+        }
+
         if (entryPrice === null && positionValue !== null && size > 0) {
           entryPrice = positionValue / size;
           this.logger.debug(`Calculated entryPrice from positionValue/size: ${entryPrice}`);
         }
 
-        // Si aún no tenemos entryPrice, usar markPrice como fallback
         if (entryPrice === null && markPrice !== null) {
           entryPrice = markPrice;
           this.logger.debug(`Using markPrice as entryPrice fallback: ${entryPrice}`);
         }
 
-        // Si no tenemos liquidation price, intentar calcularlo aproximadamente
+        // Calcular precio de liquidación dinámicamente basado en el markPrice actual
+        // Esto se actualiza en tiempo real con cada cambio de precio
+        if (markPrice !== null && leverage > 1) {
+          const isLong = position.side === 'Buy';
+          const marginRatio = 1 / leverage; // Margen requerido como porcentaje
+          
+          if (isLong) {
+            // Para posiciones long: precio de liquidación = markPrice * (1 - marginRatio)
+            liqPrice = markPrice * (1 - marginRatio * 0.9); // 0.9 para dar un pequeño buffer
+          } else {
+            // Para posiciones short: precio de liquidación = markPrice * (1 + marginRatio)
+            liqPrice = markPrice * (1 + marginRatio * 0.9);
+          }
+          this.logger.debug(`Calculated dynamic liquidation price based on markPrice ${markPrice}: ${liqPrice}`);
+        }
+
+        // Si aún no tenemos liqPrice y tenemos entryPrice, usar el cálculo tradicional
         if (liqPrice === null && entryPrice !== null && leverage > 1) {
-          // Cálculo aproximado del precio de liquidación
           const isLong = position.side === 'Buy';
           if (isLong) {
-            // Para long: liqPrice = entryPrice * (1 - 1/leverage)
             liqPrice = entryPrice * (1 - 1/leverage);
           } else {
-            // Para short: liqPrice = entryPrice * (1 + 1/leverage)
             liqPrice = entryPrice * (1 + 1/leverage);
           }
-          this.logger.debug(`Calculated approximate liquidation price: ${liqPrice}`);
+          this.logger.debug(`Calculated traditional liquidation price from entryPrice: ${liqPrice}`);
         }
         const createdTime = parseInt(position.createdTime) || Date.now();
 
@@ -234,7 +258,11 @@ export class SubaccountsService {
           // Datos originales de Bybit para debugging
           originalEntryPrice: position.entryPrice,
           originalLiqPrice: position.liqPrice,
-          originalPositionValue: position.positionValue
+          originalPositionValue: position.positionValue,
+          // Indicadores de cálculo
+          entryPriceCalculated: position.entryPrice === undefined,
+          liqPriceCalculated: position.liqPrice === '' || position.liqPrice === undefined,
+          side: position.side
         });
 
         return {
