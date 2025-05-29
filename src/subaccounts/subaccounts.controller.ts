@@ -1,5 +1,5 @@
-import { Controller, Get, UseGuards, Request, Logger, HttpException, HttpStatus } from '@nestjs/common';
-import { SubaccountsService } from './subaccounts.service';
+import { Controller, Get, Post, Body, UseGuards, Request, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { SubaccountsService, OrderRequest } from './subaccounts.service';
 import { AuthGuard } from '../auth.guard';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
@@ -124,6 +124,163 @@ export class SubaccountsController {
       }
       
       // De lo contrario, crear una nueva HttpException con el error
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  @Post('execute-order')
+  @UseGuards(AuthGuard)
+  async executeOrder(@Request() req: any, @Body() body: {
+    subaccountIds: string[];
+    orderRequest: OrderRequest;
+  }) {
+    try {
+      const userId = req.user.id;
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+
+      const { subaccountIds, orderRequest } = body;
+
+      if (!subaccountIds || !Array.isArray(subaccountIds) || subaccountIds.length === 0) {
+        throw new HttpException('subaccountIds is required and must be a non-empty array', HttpStatus.BAD_REQUEST);
+      }
+
+      if (!orderRequest) {
+        throw new HttpException('orderRequest is required', HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.log(`Executing order for user ${userId} on ${subaccountIds.length} subaccounts`, {
+        subaccountIds,
+        orderRequest
+      });
+
+      // Obtener las subcuentas del usuario
+      const { data: userSubaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
+
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new HttpException(`Failed to fetch subaccounts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      // Filtrar solo las subcuentas seleccionadas
+      const selectedSubaccounts = userSubaccounts.filter(sub => subaccountIds.includes(sub.id));
+
+      if (selectedSubaccounts.length === 0) {
+        throw new HttpException('No valid subaccounts found', HttpStatus.BAD_REQUEST);
+      }
+
+      if (selectedSubaccounts.length !== subaccountIds.length) {
+        this.logger.warn(`Some subaccounts not found. Requested: ${subaccountIds.length}, Found: ${selectedSubaccounts.length}`);
+      }
+
+      // Ejecutar órdenes en todas las subcuentas seleccionadas en paralelo
+      const orderPromises = selectedSubaccounts.map(async (subaccount) => {
+        try {
+          const result = await this.subaccountsService.executeOrder(subaccount, orderRequest);
+          return {
+            subaccountId: subaccount.id,
+            subaccountName: subaccount.name,
+            ...result
+          };
+        } catch (error: any) {
+          this.logger.error(`Error executing order for subaccount ${subaccount.name}:`, error);
+          return {
+            subaccountId: subaccount.id,
+            subaccountName: subaccount.name,
+            success: false,
+            error: error.message || 'Unknown error occurred'
+          };
+        }
+      });
+
+      const results = await Promise.all(orderPromises);
+
+      const successfulOrders = results.filter(r => r.success);
+      const failedOrders = results.filter(r => !r.success);
+
+      this.logger.log(`Order execution completed. Successful: ${successfulOrders.length}, Failed: ${failedOrders.length}`);
+
+      return {
+        totalSubaccounts: selectedSubaccounts.length,
+        successfulOrders: successfulOrders.length,
+        failedOrders: failedOrders.length,
+        results: results
+      };
+
+    } catch (error: any) {
+      this.logger.error('Error in executeOrder:', error);
+      
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  @Post('get-balance')
+  @UseGuards(AuthGuard)
+  async getSubaccountBalance(@Request() req: any, @Body() body: {
+    subaccountId: string;
+    accountType?: 'SPOT' | 'CONTRACT';
+  }) {
+    try {
+      const userId = req.user.id;
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+
+      const { subaccountId, accountType = 'SPOT' } = body;
+
+      if (!subaccountId) {
+        throw new HttpException('subaccountId is required', HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.log(`Getting balance for subaccount ${subaccountId} (${accountType})`);
+
+      // Verificar que la subcuenta pertenece al usuario
+      const { data: userSubaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
+
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new HttpException(`Failed to fetch subaccounts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      const subaccount = userSubaccounts.find(sub => sub.id === subaccountId);
+
+      if (!subaccount) {
+        throw new HttpException('Subaccount not found or access denied', HttpStatus.FORBIDDEN);
+      }
+
+      const balance = await this.subaccountsService.getAccountBalance(subaccount, accountType);
+
+      return {
+        subaccountId: subaccount.id,
+        subaccountName: subaccount.name,
+        accountType,
+        balance
+      };
+
+    } catch (error: any) {
+      this.logger.error('Error in getSubaccountBalance:', error);
+      
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
       throw new HttpException(
         error.message || 'Internal server error',
         HttpStatus.INTERNAL_SERVER_ERROR

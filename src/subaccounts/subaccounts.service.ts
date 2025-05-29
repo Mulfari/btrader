@@ -53,6 +53,24 @@ export interface Operation {
   positionValue?: number | null;
 }
 
+export interface OrderRequest {
+  symbol: string;
+  side: 'buy' | 'sell';
+  orderType: 'limit' | 'market';
+  qty: string;
+  price?: string;
+  category: 'spot' | 'linear';
+  leverage?: string;
+}
+
+export interface OrderResponse {
+  success: boolean;
+  orderId?: string;
+  orderLinkId?: string;
+  message?: string;
+  error?: string;
+}
+
 @Injectable()
 export class SubaccountsService {
   private readonly logger = new Logger(SubaccountsService.name);
@@ -349,6 +367,262 @@ export class SubaccountsService {
       return ((markPrice - entryPrice) / entryPrice) * 100;
     } else {
       return ((entryPrice - markPrice) / entryPrice) * 100;
+    }
+  }
+
+  async executeOrder(subaccount: {
+    id: string;
+    api_key: string;
+    secret_key: string;
+    is_demo: boolean;
+    name?: string;
+  }, orderRequest: OrderRequest): Promise<OrderResponse> {
+    this.logger.log(`Executing order for subaccount: ${subaccount.name || subaccount.id}`, {
+      symbol: orderRequest.symbol,
+      side: orderRequest.side,
+      orderType: orderRequest.orderType,
+      category: orderRequest.category,
+      qty: orderRequest.qty,
+      price: orderRequest.price,
+      leverage: orderRequest.leverage
+    });
+
+    try {
+      // Validar que tenemos las claves necesarias
+      if (!subaccount.api_key || !subaccount.secret_key) {
+        this.logger.error(`Missing API credentials for subaccount ${subaccount.name}`);
+        return {
+          success: false,
+          error: `Missing API credentials for subaccount ${subaccount.name || subaccount.id}`
+        };
+      }
+
+      // Configurar leverage si es operación de futuros
+      if (orderRequest.category === 'linear' && orderRequest.leverage) {
+        await this.setLeverage(subaccount, orderRequest.symbol + 'USDT', orderRequest.leverage);
+      }
+
+      const timestamp = Date.now();
+      
+      // Preparar parámetros de la orden
+      const orderParams: any = {
+        category: orderRequest.category,
+        symbol: orderRequest.symbol + (orderRequest.category === 'spot' ? 'USDT' : 'USDT'),
+        side: orderRequest.side === 'buy' ? 'Buy' : 'Sell',
+        orderType: orderRequest.orderType === 'limit' ? 'Limit' : 'Market',
+        qty: orderRequest.qty,
+      };
+
+      // Agregar precio solo para órdenes limit
+      if (orderRequest.orderType === 'limit' && orderRequest.price) {
+        orderParams.price = orderRequest.price;
+      }
+
+      // Para futuros, agregar parámetros adicionales
+      if (orderRequest.category === 'linear') {
+        orderParams.positionIdx = 0; // One-way mode
+      }
+
+      // Convertir parámetros a query string
+      const queryString = Object.keys(orderParams)
+        .sort()
+        .map(key => `${key}=${encodeURIComponent(orderParams[key])}`)
+        .join('&');
+
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, `?${queryString}`);
+
+      // Usar testnet URL si es cuenta demo
+      const baseUrl = subaccount.is_demo 
+        ? 'https://api-testnet.bybit.com' 
+        : 'https://api.bybit.com';
+
+      this.logger.debug(`Calling Bybit place order API for ${subaccount.name || subaccount.id}:`, {
+        url: `${baseUrl}/v5/order/create`,
+        isDemo: subaccount.is_demo,
+        orderParams,
+        timestamp
+      });
+
+      const response = await axios.post(`${baseUrl}/v5/order/create`, orderParams, {
+        headers: {
+          'X-BAPI-API-KEY': subaccount.api_key,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-SIGN-TYPE': '2',
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': '5000',
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.data.retCode !== 0) {
+        this.logger.error(`Bybit order placement error for ${subaccount.name}:`, {
+          retCode: response.data.retCode,
+          retMsg: response.data.retMsg,
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo,
+          orderParams
+        });
+        
+        return {
+          success: false,
+          error: `Bybit API error: ${response.data.retMsg}`
+        };
+      }
+
+      const result = response.data.result;
+      this.logger.log(`Order placed successfully for ${subaccount.name}:`, {
+        orderId: result.orderId,
+        orderLinkId: result.orderLinkId,
+        subaccountId: subaccount.id
+      });
+
+      return {
+        success: true,
+        orderId: result.orderId,
+        orderLinkId: result.orderLinkId,
+        message: 'Order placed successfully'
+      };
+
+    } catch (error: any) {
+      this.logger.error(`Error placing order for subaccount ${subaccount.name || subaccount.id}:`, {
+        error: error.message,
+        subaccountId: subaccount.id,
+        isDemo: subaccount.is_demo,
+        orderRequest
+      });
+
+      if (axios.isAxiosError(error)) {
+        this.logger.error(`Axios error for order placement:`, {
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          message: error.message,
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo
+        });
+        
+        if (error.response?.status === 401) {
+          const errorMsg = subaccount.is_demo 
+            ? `Invalid testnet API credentials for ${subaccount.name}. Please ensure you're using testnet.bybit.com API keys.`
+            : `Invalid API credentials for ${subaccount.name}. Please ensure you're using api.bybit.com API keys.`;
+          return {
+            success: false,
+            error: errorMsg
+          };
+        }
+      }
+      
+      return {
+        success: false,
+        error: error.message || 'Unknown error occurred while placing order'
+      };
+    }
+  }
+
+  private async setLeverage(subaccount: {
+    api_key: string;
+    secret_key: string;
+    is_demo: boolean;
+    name?: string;
+  }, symbol: string, leverage: string): Promise<void> {
+    try {
+      const timestamp = Date.now();
+      const leverageParams = {
+        category: 'linear',
+        symbol: symbol,
+        buyLeverage: leverage,
+        sellLeverage: leverage
+      };
+
+      const queryString = Object.keys(leverageParams)
+        .sort()
+        .map(key => `${key}=${encodeURIComponent(leverageParams[key])}`)
+        .join('&');
+
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, `?${queryString}`);
+
+      const baseUrl = subaccount.is_demo 
+        ? 'https://api-testnet.bybit.com' 
+        : 'https://api.bybit.com';
+
+      const response = await axios.post(`${baseUrl}/v5/position/set-leverage`, leverageParams, {
+        headers: {
+          'X-BAPI-API-KEY': subaccount.api_key,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-SIGN-TYPE': '2',
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': '5000',
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.data.retCode !== 0) {
+        this.logger.warn(`Failed to set leverage for ${symbol}: ${response.data.retMsg}`);
+        // No lanzar error ya que la orden aún puede ejecutarse con el leverage actual
+      } else {
+        this.logger.log(`Leverage set successfully for ${symbol}: ${leverage}x`);
+      }
+    } catch (error) {
+      this.logger.warn(`Error setting leverage for ${symbol}:`, error);
+      // No lanzar error ya que la orden aún puede ejecutarse
+    }
+  }
+
+  async getAccountBalance(subaccount: {
+    id: string;
+    api_key: string;
+    secret_key: string;
+    is_demo: boolean;
+    name?: string;
+  }, accountType: 'SPOT' | 'CONTRACT' = 'SPOT'): Promise<any> {
+    this.logger.log(`Getting account balance for subaccount: ${subaccount.name || subaccount.id}`, {
+      accountType
+    });
+    
+    try {
+      if (!subaccount.api_key || !subaccount.secret_key) {
+        this.logger.error(`Missing API credentials for subaccount ${subaccount.name}`);
+        throw new Error(`Missing API credentials for subaccount ${subaccount.name || subaccount.id}`);
+      }
+
+      const timestamp = Date.now();
+      const params = `?accountType=${accountType}`;
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, params);
+
+      const baseUrl = subaccount.is_demo 
+        ? 'https://api-testnet.bybit.com' 
+        : 'https://api.bybit.com';
+
+      const response = await axios.get(`${baseUrl}/v5/account/wallet-balance${params}`, {
+        headers: {
+          'X-BAPI-API-KEY': subaccount.api_key,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-SIGN-TYPE': '2',
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': '5000',
+        },
+      });
+
+      if (response.data.retCode !== 0) {
+        this.logger.error(`Bybit balance API error for ${subaccount.name}:`, {
+          retCode: response.data.retCode,
+          retMsg: response.data.retMsg,
+          subaccountId: subaccount.id,
+          isDemo: subaccount.is_demo
+        });
+        
+        throw new Error(`Bybit API error: ${response.data.retMsg}`);
+      }
+
+      return response.data.result;
+
+    } catch (error: any) {
+      this.logger.error(`Error getting balance for subaccount ${subaccount.name || subaccount.id}:`, {
+        error: error.message,
+        subaccountId: subaccount.id,
+        isDemo: subaccount.is_demo
+      });
+      throw error;
     }
   }
 } 
