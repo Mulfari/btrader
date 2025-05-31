@@ -384,7 +384,8 @@ export class SubaccountsService {
       category: orderRequest.category,
       qty: orderRequest.qty,
       price: orderRequest.price,
-      leverage: orderRequest.leverage
+      leverage: orderRequest.leverage,
+      isDemo: subaccount.is_demo
     });
 
     try {
@@ -397,6 +398,22 @@ export class SubaccountsService {
         };
       }
 
+      // Para cuentas demo, verificar que las claves son de testnet
+      if (subaccount.is_demo) {
+        this.logger.log(`Processing demo account order for ${subaccount.name}`);
+        
+        // Verificar permisos de trading para cuenta demo
+        try {
+          await this.checkTradingPermissions(subaccount);
+        } catch (error: any) {
+          this.logger.error(`Trading permissions check failed for demo account ${subaccount.name}:`, error.message);
+          return {
+            success: false,
+            error: `Demo account trading permissions: ${error.message}`
+          };
+        }
+      }
+
       // Configurar leverage si es operación de futuros
       if (orderRequest.category === 'linear' && orderRequest.leverage) {
         await this.setLeverage(subaccount, orderRequest.symbol + 'USDT', orderRequest.leverage);
@@ -407,7 +424,7 @@ export class SubaccountsService {
       // Preparar parámetros de la orden
       const orderParams: any = {
         category: orderRequest.category,
-        symbol: orderRequest.symbol + (orderRequest.category === 'spot' ? 'USDT' : 'USDT'),
+        symbol: orderRequest.symbol + 'USDT', // Siempre agregar USDT
         side: orderRequest.side === 'buy' ? 'Buy' : 'Sell',
         orderType: orderRequest.orderType === 'limit' ? 'Limit' : 'Market',
         qty: orderRequest.qty,
@@ -423,13 +440,16 @@ export class SubaccountsService {
         orderParams.positionIdx = 0; // One-way mode
       }
 
-      // Convertir parámetros a query string
-      const queryString = Object.keys(orderParams)
-        .sort()
-        .map(key => `${key}=${encodeURIComponent(orderParams[key])}`)
-        .join('&');
+      // Para spot, agregar parámetros específicos de spot
+      if (orderRequest.category === 'spot') {
+        // Para órdenes spot market, usar qty en lugar de orderType específico
+        if (orderRequest.orderType === 'market') {
+          orderParams.orderType = 'Market';
+        }
+      }
 
-      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, `?${queryString}`);
+      // Usar el método de firma mejorado para órdenes POST
+      const signature = this.generateSignatureForPost(subaccount.api_key, subaccount.secret_key, timestamp, orderParams);
 
       // Usar testnet URL si es cuenta demo
       const baseUrl = subaccount.is_demo 
@@ -440,7 +460,8 @@ export class SubaccountsService {
         url: `${baseUrl}/v5/order/create`,
         isDemo: subaccount.is_demo,
         orderParams,
-        timestamp
+        timestamp,
+        hasSignature: !!signature
       });
 
       const response = await axios.post(`${baseUrl}/v5/order/create`, orderParams, {
@@ -452,6 +473,12 @@ export class SubaccountsService {
           'X-BAPI-RECV-WINDOW': '5000',
           'Content-Type': 'application/json',
         },
+      });
+
+      this.logger.debug(`Bybit response for ${subaccount.name}:`, {
+        retCode: response.data.retCode,
+        retMsg: response.data.retMsg,
+        result: response.data.result
       });
 
       if (response.data.retCode !== 0) {
@@ -503,7 +530,7 @@ export class SubaccountsService {
         
         if (error.response?.status === 401) {
           const errorMsg = subaccount.is_demo 
-            ? `Invalid testnet API credentials for ${subaccount.name}. Please ensure you're using testnet.bybit.com API keys.`
+            ? `Invalid testnet API credentials for ${subaccount.name}. Please ensure you're using testnet.bybit.com API keys with trading permissions.`
             : `Invalid API credentials for ${subaccount.name}. Please ensure you're using api.bybit.com API keys.`;
           return {
             success: false,
@@ -516,6 +543,85 @@ export class SubaccountsService {
         success: false,
         error: error.message || 'Unknown error occurred while placing order'
       };
+    }
+  }
+
+  // Método mejorado de firma para requests POST
+  private generateSignatureForPost(apiKey: string, apiSecret: string, timestamp: number, params: any): string {
+    const recv_window = '5000';
+    const paramString = JSON.stringify(params);
+    const message = `${timestamp}${apiKey}${recv_window}${paramString}`;
+    
+    this.logger.debug('Signature generation:', {
+      timestamp,
+      apiKey: apiKey.substring(0, 8) + '...',
+      recv_window,
+      paramString,
+      message: message.substring(0, 100) + '...'
+    });
+    
+    return crypto.createHmac('sha256', apiSecret).update(message).digest('hex');
+  }
+
+  // Verificar permisos de trading para cuentas demo
+  private async checkTradingPermissions(subaccount: {
+    api_key: string;
+    secret_key: string;
+    is_demo: boolean;
+    name?: string;
+  }): Promise<void> {
+    try {
+      const timestamp = Date.now();
+      const params = '?';
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, params);
+
+      const baseUrl = subaccount.is_demo 
+        ? 'https://api-testnet.bybit.com' 
+        : 'https://api.bybit.com';
+
+      // Probar acceso a la API con una llamada simple
+      const response = await axios.get(`${baseUrl}/v5/user/query-api`, {
+        headers: {
+          'X-BAPI-API-KEY': subaccount.api_key,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-SIGN-TYPE': '2',
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': '5000',
+        },
+      });
+
+      if (response.data.retCode !== 0) {
+        throw new Error(`API permissions check failed: ${response.data.retMsg}`);
+      }
+
+      const apiInfo = response.data.result;
+      this.logger.log(`API permissions for ${subaccount.name}:`, {
+        readOnly: apiInfo.readOnly,
+        permissions: apiInfo.permissions
+      });
+
+      // Verificar que no sea read-only
+      if (apiInfo.readOnly === 1) {
+        throw new Error('API key is read-only. Trading permissions required.');
+      }
+
+      // Verificar permisos de trading
+      const hasTrading = apiInfo.permissions && (
+        apiInfo.permissions.ContractTrade?.includes('Order') ||
+        apiInfo.permissions.Spot?.includes('SpotTrade')
+      );
+
+      if (!hasTrading) {
+        throw new Error('API key does not have trading permissions. Please enable trading permissions in your Bybit API settings.');
+      }
+
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        if (error.response?.status === 401) {
+          throw new Error('Invalid API credentials for demo account');
+        }
+      }
+      throw error;
     }
   }
 
@@ -534,12 +640,7 @@ export class SubaccountsService {
         sellLeverage: leverage
       };
 
-      const queryString = Object.keys(leverageParams)
-        .sort()
-        .map(key => `${key}=${encodeURIComponent(leverageParams[key])}`)
-        .join('&');
-
-      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, `?${queryString}`);
+      const signature = this.generateSignatureForPost(subaccount.api_key, subaccount.secret_key, timestamp, leverageParams);
 
       const baseUrl = subaccount.is_demo 
         ? 'https://api-testnet.bybit.com' 
