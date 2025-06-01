@@ -229,32 +229,17 @@ export class SubaccountsService {
           this.logger.debug(`Using markPrice as entryPrice fallback: ${entryPrice}`);
         }
 
-        // Calcular precio de liquidación dinámicamente basado en el markPrice actual
-        // Esto se actualiza en tiempo real con cada cambio de precio
-        if (markPrice !== null && leverage > 1) {
-          const isLong = position.side === 'Buy';
-          const marginRatio = 1 / leverage; // Margen requerido como porcentaje
-          
-          if (isLong) {
-            // Para posiciones long: precio de liquidación = markPrice * (1 - marginRatio)
-            liqPrice = markPrice * (1 - marginRatio * 0.9); // 0.9 para dar un pequeño buffer
-          } else {
-            // Para posiciones short: precio de liquidación = markPrice * (1 + marginRatio)
-            liqPrice = markPrice * (1 + marginRatio * 0.9);
-          }
-          this.logger.debug(`Calculated dynamic liquidation price based on markPrice ${markPrice}: ${liqPrice}`);
-        }
+        // USAR SOLO EL PRECIO DE LIQUIDACIÓN ORIGINAL DE BYBIT
+        // No calcular dinámicamente, usar el valor real de la API
+        this.logger.log(`Original Bybit liqPrice for ${position.symbol}:`, {
+          originalLiqPrice: position.liqPrice,
+          liqPriceType: typeof position.liqPrice,
+          liqPriceParsed: liqPrice,
+          side: position.side,
+          leverage,
+          markPrice
+        });
 
-        // Si aún no tenemos liqPrice y tenemos entryPrice, usar el cálculo tradicional
-        if (liqPrice === null && entryPrice !== null && leverage > 1) {
-          const isLong = position.side === 'Buy';
-          if (isLong) {
-            liqPrice = entryPrice * (1 - 1/leverage);
-          } else {
-            liqPrice = entryPrice * (1 + 1/leverage);
-          }
-          this.logger.debug(`Calculated traditional liquidation price from entryPrice: ${liqPrice}`);
-        }
         const createdTime = parseInt(position.createdTime) || Date.now();
 
         // Calcular el porcentaje de ganancia/pérdida
@@ -298,7 +283,7 @@ export class SubaccountsService {
           exchange: 'Bybit',
           // Campos adicionales específicos de futuros
           markPrice: markPrice !== null && markPrice > 0 ? markPrice : undefined, // Precio actual del mercado
-          liquidationPrice: liqPrice !== null && liqPrice > 0 ? liqPrice : undefined, // Precio de liquidación
+          liquidationPrice: liqPrice, // Precio de liquidación tal como lo devuelve Bybit
           positionValue: positionValue !== null && positionValue > 0 ? positionValue : undefined, // Valor total de la posición
         };
       });
