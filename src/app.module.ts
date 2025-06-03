@@ -19,6 +19,7 @@ import { TradesModule } from './trades/trades.module';
     }),
     TypeOrmModule.forRoot({
       type: 'postgres',
+      url: process.env.DATABASE_URL,
       host: process.env.PGHOST || process.env.DATABASE_HOST || 'localhost',
       port: parseInt(process.env.PGPORT || process.env.DATABASE_PORT || '5432'),
       username: process.env.PGUSER || process.env.DATABASE_USER || 'postgres',
