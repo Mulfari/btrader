@@ -8,6 +8,7 @@ import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
 import { FundingRate } from './funding-rate.entity';
 import { LongShortRatio } from './long-short-ratio.entity';
+import { Liquidation } from './liquidation.entity';
 
 @Controller('trades')
 export class TradesController {
@@ -24,6 +25,8 @@ export class TradesController {
     private readonly fundingRateRepository: Repository<FundingRate>,
     @InjectRepository(LongShortRatio)
     private readonly longShortRatioRepository: Repository<LongShortRatio>,
+    @InjectRepository(Liquidation)
+    private readonly liquidationRepository: Repository<Liquidation>,
   ) {}
 
   // Obtener datos actuales (acumulador en memoria)
@@ -718,5 +721,309 @@ export class TradesController {
     }
     
     return 'NORMAL - Balanced long/short sentiment, follow trend';
+  }
+
+  // 🎯 LIQUIDATION ENDPOINTS
+  
+  @Get(':symbol/liquidations/current')
+  async getCurrentLiquidations(@Param('symbol') symbol: string) {
+    try {
+      const status = this.bybitService.getStatus();
+      const liquidationData = status.liquidationData[symbol.toUpperCase()];
+      const activeClusters = status.activeClusters;
+      
+      if (!liquidationData) {
+        return {
+          symbol: symbol.toUpperCase(),
+          recentLiquidations: [],
+          totalCount: 0,
+          totalVolume: 0,
+          activeClusters: 0,
+          message: 'Sin datos de liquidaciones disponibles'
+        };
+      }
+
+      return {
+        symbol: symbol.toUpperCase(),
+        recentLiquidations: liquidationData.recentLiquidations,
+        totalCount: liquidationData.totalCount,
+        totalVolume: liquidationData.totalVolume,
+        lastLiquidation: liquidationData.lastLiquidation,
+        activeClusters: Object.keys(activeClusters).length,
+        clusterDetails: activeClusters,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      return { error: 'Error fetching current liquidations', details: error.message };
+    }
+  }
+
+  @Get(':symbol/liquidations/history')
+  async getLiquidationHistory(
+    @Param('symbol') symbol: string,
+    @Query('limit') limit?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('minValue') minValue?: string
+  ) {
+    try {
+      const queryLimit = limit ? parseInt(limit) : 100; // Default 100 liquidaciones
+      let query = this.liquidationRepository
+        .createQueryBuilder('liq')
+        .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() });
+
+      if (startDate) {
+        query = query.andWhere('liq.timestamp >= :startDate', { startDate: new Date(startDate) });
+      }
+      if (endDate) {
+        query = query.andWhere('liq.timestamp <= :endDate', { endDate: new Date(endDate) });
+      }
+      if (minValue) {
+        query = query.andWhere('liq.value_usd >= :minValue', { minValue: parseFloat(minValue) });
+      }
+
+      const liquidations = await query
+        .orderBy('liq.timestamp', 'DESC')
+        .limit(queryLimit)
+        .getMany();
+
+      return {
+        symbol: symbol.toUpperCase(),
+        count: liquidations.length,
+        totalVolume: liquidations.reduce((sum, liq) => sum + parseFloat(liq.value_usd.toString()), 0),
+        data: liquidations.map(liq => ({
+          timestamp: liq.timestamp,
+          price: parseFloat(liq.price.toString()),
+          size: parseFloat(liq.size.toString()),
+          side: liq.side,
+          value_usd: parseFloat(liq.value_usd.toString()),
+          is_large_liquidation: liq.is_large_liquidation,
+          liquidation_intensity: liq.liquidation_intensity,
+          market_event_type: liq.market_event_type,
+          market_pressure: liq.market_pressure,
+          is_cluster_member: liq.is_cluster_member,
+          cluster_id: liq.cluster_id,
+          is_reversal_zone: liq.is_reversal_zone
+        }))
+      };
+    } catch (error) {
+      return { error: 'Error fetching liquidation history', details: error.message };
+    }
+  }
+
+  @Get(':symbol/liquidations/clusters')
+  async getLiquidationClusters(
+    @Param('symbol') symbol: string,
+    @Query('hours') hours?: string
+  ) {
+    try {
+      const hoursBack = hours ? parseInt(hours) : 24; // Default 24 horas
+      const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+
+      const clusters = await this.liquidationRepository
+        .createQueryBuilder('liq')
+        .select([
+          'liq.cluster_id as clusterId',
+          'MIN(liq.timestamp) as startTime',
+          'MAX(liq.timestamp) as endTime',
+          'COUNT(*) as liquidationCount',
+          'SUM(liq.value_usd) as totalVolume',
+          'MIN(liq.price) as priceMin',
+          'MAX(liq.price) as priceMax',
+          'liq.market_event_type as eventType'
+        ])
+        .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() })
+        .andWhere('liq.timestamp >= :startTime', { startTime })
+        .andWhere('liq.cluster_id IS NOT NULL')
+        .groupBy('liq.cluster_id, liq.market_event_type')
+        .orderBy('MIN(liq.timestamp)', 'DESC')
+        .getRawMany();
+
+      return {
+        symbol: symbol.toUpperCase(),
+        periodHours: hoursBack,
+        clusterCount: clusters.length,
+        clusters: clusters.map(cluster => ({
+          clusterId: cluster.clusterId,
+          startTime: cluster.startTime,
+          endTime: cluster.endTime,
+          liquidationCount: parseInt(cluster.liquidationCount),
+          totalVolume: parseFloat(cluster.totalVolume),
+          priceRange: {
+            min: parseFloat(cluster.priceMin),
+            max: parseFloat(cluster.priceMax),
+            spread: ((parseFloat(cluster.priceMax) - parseFloat(cluster.priceMin)) / parseFloat(cluster.priceMin) * 100).toFixed(4)
+          },
+          eventType: cluster.eventType,
+          intensity: this.calculateClusterIntensity(parseInt(cluster.liquidationCount), parseFloat(cluster.totalVolume))
+        }))
+      };
+    } catch (error) {
+      return { error: 'Error analyzing liquidation clusters', details: error.message };
+    }
+  }
+
+  @Get(':symbol/liquidations/analysis')
+  async getLiquidationAnalysis(@Param('symbol') symbol: string) {
+    try {
+      // Obtener datos de diferentes períodos
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const [recent1h, recent6h, recent24h, largeLiquidations] = await Promise.all([
+        // Última hora
+        this.liquidationRepository
+          .createQueryBuilder('liq')
+          .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() })
+          .andWhere('liq.timestamp >= :oneHourAgo', { oneHourAgo })
+          .orderBy('liq.timestamp', 'DESC')
+          .getMany(),
+
+        // Últimas 6 horas
+        this.liquidationRepository
+          .createQueryBuilder('liq')
+          .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() })
+          .andWhere('liq.timestamp >= :sixHoursAgo', { sixHoursAgo })
+          .orderBy('liq.timestamp', 'DESC')
+          .getMany(),
+
+        // Últimas 24 horas
+        this.liquidationRepository
+          .createQueryBuilder('liq')
+          .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() })
+          .andWhere('liq.timestamp >= :twentyFourHoursAgo', { twentyFourHoursAgo })
+          .orderBy('liq.timestamp', 'DESC')
+          .getMany(),
+
+        // Liquidaciones grandes recientes
+        this.liquidationRepository
+          .createQueryBuilder('liq')
+          .where('liq.symbol = :symbol', { symbol: symbol.toUpperCase() })
+          .andWhere('liq.is_large_liquidation = :isLarge', { isLarge: true })
+          .andWhere('liq.timestamp >= :twentyFourHoursAgo', { twentyFourHoursAgo })
+          .orderBy('liq.value_usd', 'DESC')
+          .limit(10)
+          .getMany()
+      ]);
+
+      // Análisis por períodos
+      const analysis1h = this.analyzeLiquidationPeriod(recent1h);
+      const analysis6h = this.analyzeLiquidationPeriod(recent6h);
+      const analysis24h = this.analyzeLiquidationPeriod(recent24h);
+
+      // Análisis de zonas de reversión
+      const reversalZones = recent24h.filter(liq => liq.is_reversal_zone);
+      const cascadeEvents = recent24h.filter(liq => liq.market_event_type === 'cascade');
+
+      return {
+        symbol: symbol.toUpperCase(),
+        summary: {
+          total_liquidations_1h: recent1h.length,
+          total_liquidations_6h: recent6h.length,
+          total_liquidations_24h: recent24h.length,
+          total_volume_1h: analysis1h.totalVolume,
+          total_volume_6h: analysis6h.totalVolume,
+          total_volume_24h: analysis24h.totalVolume,
+          large_liquidations_24h: largeLiquidations.length
+        },
+        period_analysis: {
+          last_1h: analysis1h,
+          last_6h: analysis6h,
+          last_24h: analysis24h
+        },
+        market_events: {
+          reversal_zones_24h: reversalZones.length,
+          cascade_events_24h: cascadeEvents.length,
+          latest_reversal_zones: reversalZones.slice(0, 5).map(liq => ({
+            timestamp: liq.timestamp,
+            price: parseFloat(liq.price.toString()),
+            intensity: liq.liquidation_intensity,
+            volume: parseFloat(liq.value_usd.toString())
+          }))
+        },
+        large_liquidations: largeLiquidations.map(liq => ({
+          timestamp: liq.timestamp,
+          side: liq.side,
+          price: parseFloat(liq.price.toString()),
+          size: parseFloat(liq.size.toString()),
+          value_usd: parseFloat(liq.value_usd.toString()),
+          event_type: liq.market_event_type,
+          market_pressure: liq.market_pressure
+        })),
+        risk_assessment: {
+          liquidation_pressure: this.assessLiquidationPressure(analysis1h, analysis24h),
+          market_stress_level: this.assessMarketStress(recent1h, cascadeEvents.length),
+          potential_reversal_zones: reversalZones.length > 0 ? 'DETECTED' : 'NONE'
+        }
+      };
+    } catch (error) {
+      return { error: 'Error analyzing liquidations', details: error.message };
+    }
+  }
+
+  // 🎯 Métodos auxiliares para análisis de liquidaciones
+
+  private analyzeLiquidationPeriod(liquidations: Liquidation[]) {
+    if (liquidations.length === 0) {
+      return {
+        totalVolume: 0,
+        longLiquidations: 0,
+        shortLiquidations: 0,
+        averageSize: 0,
+        dominantSide: 'none',
+        intensity: 'none'
+      };
+    }
+
+    const totalVolume = liquidations.reduce((sum, liq) => sum + parseFloat(liq.value_usd.toString()), 0);
+    const longLiqs = liquidations.filter(liq => liq.side === 'Buy');
+    const shortLiqs = liquidations.filter(liq => liq.side === 'Sell');
+    const averageSize = totalVolume / liquidations.length;
+
+    let dominantSide = 'balanced';
+    if (longLiqs.length > shortLiqs.length * 2) dominantSide = 'long_heavy';
+    else if (shortLiqs.length > longLiqs.length * 2) dominantSide = 'short_heavy';
+
+    let intensity = 'low';
+    if (liquidations.length > 50) intensity = 'extreme';
+    else if (liquidations.length > 20) intensity = 'high';
+    else if (liquidations.length > 10) intensity = 'medium';
+
+    return {
+      totalVolume,
+      longLiquidations: longLiqs.length,
+      shortLiquidations: shortLiqs.length,
+      averageSize,
+      dominantSide,
+      intensity
+    };
+  }
+
+  private calculateClusterIntensity(count: number, volume: number): string {
+    if (count > 20 && volume > 5000000) return 'extreme';
+    if (count > 10 && volume > 1000000) return 'high';
+    if (count > 5 && volume > 500000) return 'medium';
+    return 'low';
+  }
+
+  private assessLiquidationPressure(recent: any, baseline: any): string {
+    const volumeRatio = baseline.totalVolume > 0 ? recent.totalVolume / (baseline.totalVolume / 24) : 0;
+    
+    if (volumeRatio > 5) return 'EXTREME';
+    if (volumeRatio > 3) return 'HIGH';
+    if (volumeRatio > 1.5) return 'MEDIUM';
+    return 'LOW';
+  }
+
+  private assessMarketStress(recentLiquidations: Liquidation[], cascadeCount: number): string {
+    const extremeEvents = recentLiquidations.filter(liq => 
+      liq.liquidation_intensity === 'extreme' || liq.market_event_type === 'cascade'
+    ).length;
+    
+    if (extremeEvents > 5 || cascadeCount > 2) return 'CRITICAL';
+    if (extremeEvents > 2 || cascadeCount > 1) return 'HIGH';
+    if (extremeEvents > 0) return 'MEDIUM';
+    return 'LOW';
   }
 } 

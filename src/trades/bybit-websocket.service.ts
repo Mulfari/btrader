@@ -7,6 +7,7 @@ import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
 import { FundingRate } from './funding-rate.entity';
 import { LongShortRatio } from './long-short-ratio.entity';
+import { Liquidation } from './liquidation.entity';
 
 interface BybitTrade {
   T: number;        // timestamp
@@ -76,6 +77,26 @@ interface LongShortRatioData {
   timestamp: Date;
 }
 
+interface LiquidationData {
+  symbol: string;
+  price: number;
+  size: number;
+  side: string; // 'Buy' or 'Sell'
+  timestamp: Date;
+  value_usd: number;
+}
+
+interface LiquidationCluster {
+  id: string;
+  startTime: Date;
+  endTime: Date;
+  totalVolume: number;
+  count: number;
+  priceMin: number;
+  priceMax: number;
+  dominantSide: string;
+}
+
 @Injectable()
 export class BybitWebSocketService implements OnModuleInit {
   private readonly logger = new Logger(BybitWebSocketService.name);
@@ -85,6 +106,8 @@ export class BybitWebSocketService implements OnModuleInit {
   private openInterestData = new Map<string, OpenInterestData>();
   private fundingRateData = new Map<string, FundingRateData>();
   private longShortRatioData = new Map<string, LongShortRatioData>();
+  private liquidationData = new Map<string, LiquidationData[]>(); // Buffer for clustering
+  private activeClusters = new Map<string, LiquidationCluster>(); // Active clusters
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
   private isPaused = false; // 🟢 Control de pausa
   private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
@@ -104,6 +127,8 @@ export class BybitWebSocketService implements OnModuleInit {
     private fundingRateRepository: Repository<FundingRate>,
     @InjectRepository(LongShortRatio)
     private longShortRatioRepository: Repository<LongShortRatio>,
+    @InjectRepository(Liquidation)
+    private liquidationRepository: Repository<Liquidation>,
   ) {}
 
   onModuleInit() {
@@ -222,6 +247,44 @@ export class BybitWebSocketService implements OnModuleInit {
             timestamp: data.timestamp
           }
         ])
+      ),
+      // 🟢 Agregar datos de Liquidaciones al status
+      liquidationData: Object.fromEntries(
+        Array.from(this.liquidationData.entries()).map(([symbol, liquidations]) => [
+          symbol,
+          {
+            recentLiquidations: liquidations.slice(-10).map(liq => ({
+              price: liq.price,
+              size: liq.size,
+              side: liq.side,
+              value_usd: liq.value_usd,
+              timestamp: liq.timestamp
+            })), // Últimas 10 liquidaciones
+            totalCount: liquidations.length,
+            totalVolume: liquidations.reduce((sum, liq) => sum + liq.value_usd, 0),
+            lastLiquidation: liquidations.length > 0 ? {
+              price: liquidations[liquidations.length - 1].price,
+              side: liquidations[liquidations.length - 1].side,
+              value_usd: liquidations[liquidations.length - 1].value_usd,
+              timestamp: liquidations[liquidations.length - 1].timestamp
+            } : null
+          }
+        ])
+      ),
+      activeClusters: Object.fromEntries(
+        Array.from(this.activeClusters.entries()).map(([id, cluster]) => [
+          id,
+          {
+            id: cluster.id,
+            startTime: cluster.startTime,
+            endTime: cluster.endTime,
+            totalVolume: cluster.totalVolume,
+            count: cluster.count,
+            priceMin: cluster.priceMin,
+            priceMax: cluster.priceMax,
+            dominantSide: cluster.dominantSide
+          }
+        ])
       )
     };
   }
@@ -261,11 +324,12 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private subscribeToTrades() {
-    // 🟢 Suscripciones solo a trades y orderbook (Open Interest va por REST API)
+    // 🟢 Suscripciones a trades, orderbook y liquidaciones
     const tradeSubscriptions = this.symbols.map(symbol => `publicTrade.${symbol}`);
     const orderbookSubscriptions = this.symbols.map(symbol => `orderbook.1.${symbol}`);
+    const liquidationSubscriptions = this.symbols.map(symbol => `allLiquidation.${symbol}`);
     
-    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions];
+    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions, ...liquidationSubscriptions];
     
     const message = {
       op: 'subscribe',
@@ -294,6 +358,11 @@ export class BybitWebSocketService implements OnModuleInit {
       // Procesar orderbook
       if (message.topic && message.topic.startsWith('orderbook.1.') && message.data) {
         this.processOrderbook(message);
+      }
+
+      // Procesar liquidaciones
+      if (message.topic && message.topic.startsWith('allLiquidation.') && message.data) {
+        this.processLiquidations(message);
       }
     } catch (error) {
       this.logger.error('❌ Error procesando mensaje:', error);
@@ -1009,6 +1078,205 @@ export class BybitWebSocketService implements OnModuleInit {
         fomoPanicLevel: 0,
         crowdBehavior: 'balanced'
       };
+    }
+  }
+
+  // 🟢 Nuevo método para procesar liquidaciones
+  private processLiquidations(message: any) {
+    if (this.isPaused) return; // 🟢 No procesar si está pausado
+    
+    const liquidations = message.data;
+    const symbol = message.topic.replace('allLiquidation.', '');
+
+    liquidations.forEach((liquidation: any) => {
+      const price = parseFloat(liquidation.p);
+      const size = parseFloat(liquidation.v);
+      const side = liquidation.S; // 'Buy' significa long liquidado, 'Sell' significa short liquidado
+      const timestamp = new Date(liquidation.T);
+      
+      // Estimar valor USD (aproximación usando el precio)
+      const value_usd = price * size;
+
+      const liquidationData: LiquidationData = {
+        symbol,
+        price,
+        size,
+        side,
+        timestamp,
+        value_usd
+      };
+
+      // Añadir al buffer de liquidaciones
+      if (!this.liquidationData.has(symbol)) {
+        this.liquidationData.set(symbol, []);
+      }
+      
+      const liquidationsBuffer = this.liquidationData.get(symbol)!;
+      liquidationsBuffer.push(liquidationData);
+      
+      // Mantener solo las últimas 100 liquidaciones para análisis
+      if (liquidationsBuffer.length > 100) {
+        liquidationsBuffer.splice(0, liquidationsBuffer.length - 100);
+      }
+
+      this.logger.debug(`💥 Liquidación ${symbol}: ${side === 'Buy' ? 'LONG' : 'SHORT'} liquidado - ${size} @ $${price.toFixed(2)} (~$${value_usd.toFixed(0)})`);
+
+      // Procesar clustering y guardar inmediatamente
+      this.processLiquidationClustering(symbol, liquidationData);
+      this.saveLiquidationData(liquidationData);
+    });
+  }
+
+  // 🟢 Análisis de clustering de liquidaciones
+  private processLiquidationClustering(symbol: string, newLiquidation: LiquidationData) {
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    
+    // Obtener liquidaciones recientes para análisis
+    const recentLiquidations = this.liquidationData.get(symbol) || [];
+    const recent5min = recentLiquidations.filter(liq => liq.timestamp >= fiveMinutesAgo);
+    
+    // Buscar si pertenece a un cluster existente
+    let belongsToCluster = false;
+    for (const [clusterId, cluster] of this.activeClusters.entries()) {
+      if (cluster.endTime >= fiveMinutesAgo && 
+          Math.abs(newLiquidation.price - cluster.priceMin) / cluster.priceMin < 0.005) { // 0.5% price difference
+        
+        // Extender cluster existente
+        cluster.endTime = now;
+        cluster.totalVolume += newLiquidation.value_usd;
+        cluster.count++;
+        cluster.priceMin = Math.min(cluster.priceMin, newLiquidation.price);
+        cluster.priceMax = Math.max(cluster.priceMax, newLiquidation.price);
+        
+        belongsToCluster = true;
+        break;
+      }
+    }
+    
+    // Si no pertenece a cluster existente y hay suficientes liquidaciones recientes, crear nuevo cluster
+    if (!belongsToCluster && recent5min.length >= 3) {
+      const clusterId = `${symbol}_${now.getTime()}`;
+      const cluster: LiquidationCluster = {
+        id: clusterId,
+        startTime: recent5min[0].timestamp,
+        endTime: now,
+        totalVolume: recent5min.reduce((sum, liq) => sum + liq.value_usd, 0),
+        count: recent5min.length,
+        priceMin: Math.min(...recent5min.map(liq => liq.price)),
+        priceMax: Math.max(...recent5min.map(liq => liq.price)),
+        dominantSide: this.getDominantSide(recent5min)
+      };
+      
+      this.activeClusters.set(clusterId, cluster);
+      this.logger.log(`🔥 Nuevo cluster de liquidaciones detectado: ${clusterId} - ${cluster.count} liq, $${cluster.totalVolume.toFixed(0)} total`);
+    }
+    
+    // Limpiar clusters antiguos (>10 minutos)
+    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+    for (const [clusterId, cluster] of this.activeClusters.entries()) {
+      if (cluster.endTime < tenMinutesAgo) {
+        this.activeClusters.delete(clusterId);
+      }
+    }
+  }
+
+  // 🟢 Determinar lado dominante en un grupo de liquidaciones
+  private getDominantSide(liquidations: LiquidationData[]): string {
+    const longLiqs = liquidations.filter(liq => liq.side === 'Buy').length;
+    const shortLiqs = liquidations.filter(liq => liq.side === 'Sell').length;
+    
+    if (longLiqs > shortLiqs * 1.5) return 'long_cascade';
+    if (shortLiqs > longLiqs * 1.5) return 'short_cascade';
+    return 'mixed';
+  }
+
+  // 🟢 Guardar datos de liquidación con análisis avanzado
+  private async saveLiquidationData(liquidationData: LiquidationData) {
+    try {
+      const symbol = liquidationData.symbol;
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const recentLiquidations = this.liquidationData.get(symbol) || [];
+      const recent5min = recentLiquidations.filter(liq => liq.timestamp >= fiveMinutesAgo);
+      
+      // Obtener precio antes/después para análisis de impacto
+      const orderbookPrice = this.orderbookData.get(symbol);
+      const currentPrice = orderbookPrice ? (orderbookPrice.bidPrice + orderbookPrice.askPrice) / 2 : liquidationData.price;
+      
+      // Calcular métricas de análisis
+      const totalVolumeIn5min = recent5min.reduce((sum, liq) => sum + liq.value_usd, 0);
+      const liquidationsIn5min = recent5min.length;
+      const isLargeLiquidation = liquidationData.value_usd > 100000; // >$100k es grande
+      
+      let intensity = 'low';
+      if (liquidationsIn5min > 20) intensity = 'extreme';
+      else if (liquidationsIn5min > 10) intensity = 'high';
+      else if (liquidationsIn5min > 5) intensity = 'medium';
+      
+      // Detectar tipo de evento
+      let eventType = 'single';
+      if (liquidationsIn5min > 15) eventType = 'cascade';
+      else if (liquidationsIn5min > 5) eventType = 'cluster';
+      else if (liquidationData.value_usd > 500000) eventType = 'flash_crash';
+      
+      // Buscar cluster asociado
+      let clusterId: string | null = null;
+      let isClusterStart = false;
+      let isClusterMember = false;
+      
+      for (const [id, cluster] of this.activeClusters.entries()) {
+        if (cluster.priceMin <= liquidationData.price && liquidationData.price <= cluster.priceMax) {
+          clusterId = id;
+          isClusterMember = true;
+          if (cluster.count === 1) isClusterStart = true;
+          break;
+        }
+      }
+      
+      // Calcular ratios long/short
+      const longLiqs = recent5min.filter(liq => liq.side === 'Buy');
+      const shortLiqs = recent5min.filter(liq => liq.side === 'Sell');
+      const liquidationRatio = shortLiqs.length > 0 ? longLiqs.length / shortLiqs.length : longLiqs.length || 1;
+      
+      // Determinar presión del mercado
+      let marketPressure = 'neutral';
+      if (liquidationRatio > 3) marketPressure = 'extreme_buying'; // Shorts siendo liquidados masivamente
+      else if (liquidationRatio > 1.5) marketPressure = 'buying';
+      else if (liquidationRatio < 0.33) marketPressure = 'extreme_selling'; // Longs siendo liquidados masivamente
+      else if (liquidationRatio < 0.67) marketPressure = 'selling';
+      
+      // Detectar zona de reversal (muchas liquidaciones pueden indicar exhaustion)
+      const isReversalZone = liquidationsIn5min > 10 && totalVolumeIn5min > 1000000; // >$1M en 5min
+      
+      const liquidationEntity = new Liquidation();
+      liquidationEntity.symbol = symbol;
+      liquidationEntity.timestamp = liquidationData.timestamp;
+      liquidationEntity.price = liquidationData.price;
+      liquidationEntity.size = liquidationData.size;
+      liquidationEntity.side = liquidationData.side;
+      liquidationEntity.value_usd = liquidationData.value_usd;
+      
+      // Análisis
+      liquidationEntity.is_large_liquidation = isLargeLiquidation;
+      liquidationEntity.liquidation_intensity = intensity;
+      liquidationEntity.price_impact_percent = 0; // Calcularemos después
+      liquidationEntity.is_cluster_start = isClusterStart;
+      liquidationEntity.is_cluster_member = isClusterMember;
+      liquidationEntity.cluster_id = clusterId;
+      liquidationEntity.liquidations_in_5min = liquidationsIn5min;
+      liquidationEntity.volume_in_5min = totalVolumeIn5min;
+      liquidationEntity.market_event_type = eventType;
+      liquidationEntity.liquidation_ratio = liquidationRatio;
+      liquidationEntity.is_reversal_zone = isReversalZone;
+      liquidationEntity.market_pressure = marketPressure;
+      liquidationEntity.price_before_1min = currentPrice; // Se actualizará después
+      liquidationEntity.price_after_1min = currentPrice; // Se actualizará después
+      liquidationEntity.recovery_percent = 0; // Se calculará después
+
+      await this.liquidationRepository.save(liquidationEntity);
+      this.logger.debug(`💾 Liquidación guardada: ${symbol} - ${liquidationData.side} $${liquidationData.value_usd.toFixed(0)} @ $${liquidationData.price.toFixed(2)}`);
+    } catch (error) {
+      this.logger.error('❌ Error guardando liquidación:', error);
     }
   }
 } 

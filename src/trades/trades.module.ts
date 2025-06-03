@@ -5,6 +5,7 @@ import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
 import { FundingRate } from './funding-rate.entity';
 import { LongShortRatio } from './long-short-ratio.entity';
+import { Liquidation } from './liquidation.entity';
 import { TradesController } from './trades.controller';
 import { TradesService } from './trades.service';
 import { BybitWebSocketService } from './bybit-websocket.service';
@@ -16,7 +17,8 @@ import { BybitWebSocketService } from './bybit-websocket.service';
       OrderbookSnapshot, 
       OpenInterest,
       FundingRate,
-      LongShortRatio
+      LongShortRatio,
+      Liquidation
     ])
   ],
   controllers: [TradesController],
