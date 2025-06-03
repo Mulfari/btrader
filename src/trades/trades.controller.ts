@@ -136,4 +136,54 @@ export class TradesController {
     const durationMinutes = duration ? parseInt(duration) : 60; // 1 hora por defecto
     return this.tradesService.getSpreadAnalysis(symbol.toUpperCase(), durationMinutes);
   }
+
+  // 🟢 Endpoints para Open Interest
+  @Get(':symbol/open-interest/current')
+  async getCurrentOpenInterest(@Param('symbol') symbol: string) {
+    const status = this.bybitService.getStatus();
+    const oiData = status.openInterestData[symbol.toUpperCase()];
+    
+    if (!oiData) {
+      return {
+        symbol: symbol.toUpperCase(),
+        openInterest: 0,
+        deltaOI: 0,
+        price: 0,
+        trend: 'neutral',
+        message: 'Sin datos de Open Interest disponibles'
+      };
+    }
+
+    const trend = oiData.deltaOI > 0 ? 'increasing' : oiData.deltaOI < 0 ? 'decreasing' : 'stable';
+    
+    return {
+      symbol: symbol.toUpperCase(),
+      ...oiData,
+      trend,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  @Get(':symbol/open-interest/history')
+  async getOpenInterestHistory(
+    @Param('symbol') symbol: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const fromDate = from ? new Date(from) : new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h por defecto
+    const toDate = to ? new Date(to) : new Date();
+    const limitNum = limit ? parseInt(limit) : 1000;
+
+    return this.tradesService.getOpenInterestHistory(symbol.toUpperCase(), fromDate, toDate, limitNum);
+  }
+
+  @Get(':symbol/open-interest/analysis')
+  async getOpenInterestAnalysis(
+    @Param('symbol') symbol: string,
+    @Query('duration') duration?: string,
+  ) {
+    const durationHours = duration ? parseInt(duration) : 24; // 24 horas por defecto
+    return this.tradesService.getOpenInterestAnalysis(symbol.toUpperCase(), durationHours);
+  }
 } 

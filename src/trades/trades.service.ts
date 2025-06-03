@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { TradeAggregate } from './trade-aggregate.entity';
 import { OrderbookSnapshot } from './orderbook-snapshot.entity';
+import { OpenInterest } from './open-interest.entity';
 import { BybitWebSocketService } from './bybit-websocket.service';
 
 @Injectable()
@@ -12,6 +13,8 @@ export class TradesService {
     private tradeRepository: Repository<TradeAggregate>,
     @InjectRepository(OrderbookSnapshot)
     private orderbookRepository: Repository<OrderbookSnapshot>,
+    @InjectRepository(OpenInterest)
+    private openInterestRepository: Repository<OpenInterest>,
     private bybitService: BybitWebSocketService,
   ) {}
 
@@ -287,6 +290,141 @@ export class TradesService {
         maxPrice,
         priceRange: maxPrice - minPrice,
         priceChangePercent: ((maxPrice - minPrice) / minPrice) * 100
+      },
+      lastSnapshot: data[data.length - 1]
+    };
+  }
+
+  // 🟢 Métodos para Open Interest
+  
+  // Obtener histórico de Open Interest
+  async getOpenInterestHistory(symbol: string, from: Date, to: Date, limit: number) {
+    return this.openInterestRepository.find({
+      where: {
+        symbol,
+        timestamp: Between(from, to)
+      },
+      order: { timestamp: 'DESC' },
+      take: limit
+    });
+  }
+
+  // Análisis de Open Interest para detectar acumulación/distribución
+  async getOpenInterestAnalysis(symbol: string, durationHours: number) {
+    const from = new Date(Date.now() - durationHours * 60 * 60 * 1000);
+    const to = new Date();
+
+    const data = await this.openInterestRepository.find({
+      where: {
+        symbol,
+        timestamp: Between(from, to)
+      },
+      order: { timestamp: 'ASC' }
+    });
+
+    if (data.length === 0) {
+      return {
+        symbol,
+        period: `${durationHours} horas`,
+        message: 'Sin datos de Open Interest disponibles',
+        analysis: null
+      };
+    }
+
+    // Calcular métricas básicas
+    const openInterests = data.map(d => Number(d.open_interest));
+    const deltas = data.map(d => Number(d.delta_oi));
+    const prices = data.map(d => Number(d.price));
+
+    const startOI = openInterests[0];
+    const endOI = openInterests[openInterests.length - 1];
+    const totalDeltaOI = endOI - startOI;
+    const avgOI = openInterests.reduce((a, b) => a + b, 0) / openInterests.length;
+
+    const startPrice = prices[0];
+    const endPrice = prices[prices.length - 1];
+    const priceChange = endPrice - startPrice;
+    const priceChangePercent = (priceChange / startPrice) * 100;
+
+    // Clasificar períodos según delta OI y precio
+    const accumulation = data.filter(d => Number(d.delta_oi) > 0 && Math.abs(Number(d.price) - avgOI) < avgOI * 0.02); // OI+ con precio estable
+    const distribution = data.filter(d => Number(d.delta_oi) < 0 && Math.abs(Number(d.price) - avgOI) < avgOI * 0.02); // OI- con precio estable
+    const bullishAccumulation = data.filter(d => Number(d.delta_oi) > 0 && Number(d.price) > startPrice); // OI+ con precio+
+    const bearishAccumulation = data.filter(d => Number(d.delta_oi) > 0 && Number(d.price) < startPrice); // OI+ con precio-
+    const longLiquidation = data.filter(d => Number(d.delta_oi) < 0 && Number(d.price) < startPrice); // OI- con precio-
+    const shortSqueeze = data.filter(d => Number(d.delta_oi) < 0 && Number(d.price) > startPrice); // OI- con precio+
+
+    // Detectar tendencia principal
+    let mainTrend = 'neutral';
+    if (totalDeltaOI > 0 && priceChange > 0) mainTrend = 'bullish_accumulation';
+    else if (totalDeltaOI > 0 && priceChange < 0) mainTrend = 'bearish_accumulation';
+    else if (totalDeltaOI < 0 && priceChange > 0) mainTrend = 'short_squeeze';
+    else if (totalDeltaOI < 0 && priceChange < 0) mainTrend = 'long_liquidation';
+    else if (totalDeltaOI > 0 && Math.abs(priceChangePercent) < 1) mainTrend = 'accumulation';
+    else if (totalDeltaOI < 0 && Math.abs(priceChangePercent) < 1) mainTrend = 'distribution';
+
+    // Calcular volatilidad del OI
+    const oiVariance = openInterests.reduce((acc, oi) => acc + Math.pow(oi - avgOI, 2), 0) / openInterests.length;
+    const oiStdDev = Math.sqrt(oiVariance);
+
+    return {
+      symbol,
+      period: `${durationHours} horas`,
+      dataPoints: data.length,
+      timeRange: {
+        from: from.toISOString(),
+        to: to.toISOString()
+      },
+      openInterestMetrics: {
+        startOI,
+        endOI,
+        totalDeltaOI,
+        deltaOIPercent: (totalDeltaOI / startOI) * 100,
+        averageOI: avgOI,
+        volatility: oiStdDev / avgOI, // Coeficiente de variación
+        maxOI: Math.max(...openInterests),
+        minOI: Math.min(...openInterests)
+      },
+      priceCorrelation: {
+        startPrice,
+        endPrice,
+        priceChange,
+        priceChangePercent,
+        avgPrice: prices.reduce((a, b) => a + b, 0) / prices.length
+      },
+      marketBehavior: {
+        mainTrend,
+        accumulation: {
+          periods: accumulation.length,
+          percentage: (accumulation.length / data.length) * 100
+        },
+        distribution: {
+          periods: distribution.length,
+          percentage: (distribution.length / data.length) * 100
+        },
+        bullishAccumulation: {
+          periods: bullishAccumulation.length,
+          percentage: (bullishAccumulation.length / data.length) * 100
+        },
+        bearishAccumulation: {
+          periods: bearishAccumulation.length,
+          percentage: (bearishAccumulation.length / data.length) * 100
+        },
+        longLiquidation: {
+          periods: longLiquidation.length,
+          percentage: (longLiquidation.length / data.length) * 100
+        },
+        shortSqueeze: {
+          periods: shortSqueeze.length,
+          percentage: (shortSqueeze.length / data.length) * 100
+        }
+      },
+      signals: {
+        leverageWarning: oiStdDev / avgOI > 0.3, // Alta volatilidad en OI
+        accumulationSignal: accumulation.length > data.length * 0.3, // >30% del tiempo acumulando
+        distributionSignal: distribution.length > data.length * 0.3, // >30% del tiempo distribuyendo
+        extremeLeverage: endOI > startOI * 2, // OI duplicado
+        liquidationRisk: totalDeltaOI < 0 && Math.abs(totalDeltaOI) > startOI * 0.2 // Caída >20% en OI
       },
       lastSnapshot: data[data.length - 1]
     };

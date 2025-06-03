@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import * as WebSocket from 'ws';
 import { TradeAggregate } from './trade-aggregate.entity';
 import { OrderbookSnapshot } from './orderbook-snapshot.entity';
+import { OpenInterest } from './open-interest.entity';
 
 interface BybitTrade {
   T: number;        // timestamp
@@ -22,6 +23,13 @@ interface BybitOrderbook {
   a: string[][];    // asks [price, size]
   u: number;        // update id
   seq: number;      // sequence number
+}
+
+interface BybitOpenInterest {
+  symbol: string;           // symbol
+  openInterest: string;     // open interest value
+  timestamp: string;        // timestamp
+  nextTime: string;         // next update time
 }
 
 interface TradeAccumulator {
@@ -45,28 +53,43 @@ interface OrderbookData {
   timestamp: Date;
 }
 
+interface OpenInterestData {
+  symbol: string;
+  openInterest: number;
+  previousOI: number;
+  deltaOI: number;
+  price: number;
+  timestamp: Date;
+  nextTime: number;
+}
+
 @Injectable()
 export class BybitWebSocketService implements OnModuleInit {
   private readonly logger = new Logger(BybitWebSocketService.name);
   private ws: WebSocket;
   private accumulators = new Map<string, TradeAccumulator>();
   private orderbookData = new Map<string, OrderbookData>();
+  private openInterestData = new Map<string, OpenInterestData>();
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
   private isPaused = false; // 🟢 Control de pausa
   private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
   private orderbookTimer: NodeJS.Timeout | null = null; // 🟢 Timer para snapshots del orderbook
+  private openInterestTimer: NodeJS.Timeout | null = null; // 🟢 Timer para OI
 
   constructor(
     @InjectRepository(TradeAggregate)
     private tradeRepository: Repository<TradeAggregate>,
     @InjectRepository(OrderbookSnapshot)
     private orderbookRepository: Repository<OrderbookSnapshot>,
+    @InjectRepository(OpenInterest)
+    private openInterestRepository: Repository<OpenInterest>,
   ) {}
 
   onModuleInit() {
     this.connect();
     this.startAggregationTimer();
     this.startOrderbookTimer(); // 🟢 Iniciar timer del orderbook
+    this.startOpenInterestTimer(); // 🟢 Iniciar timer de Open Interest
   }
 
   // 🟢 Métodos de control
@@ -80,6 +103,10 @@ export class BybitWebSocketService implements OnModuleInit {
       clearInterval(this.orderbookTimer);
       this.orderbookTimer = null;
     }
+    if (this.openInterestTimer) { // 🟢 Parar timer de Open Interest
+      clearInterval(this.openInterestTimer);
+      this.openInterestTimer = null;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close();
     }
@@ -91,6 +118,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.connect();
     this.startAggregationTimer();
     this.startOrderbookTimer(); // 🟢 Reiniciar timer del orderbook
+    this.startOpenInterestTimer(); // 🟢 Reiniciar timer de Open Interest
     this.logger.log('▶️ Recolección de datos REANUDADA');
   }
 
@@ -120,6 +148,19 @@ export class BybitWebSocketService implements OnModuleInit {
             midPrice: (data.bidPrice + data.askPrice) / 2,
             imbalance: data.bidSize / (data.bidSize + data.askSize),
             lastUpdate: data.timestamp
+          }
+        ])
+      ),
+      // 🟢 Agregar datos de Open Interest al status
+      openInterestData: Object.fromEntries(
+        Array.from(this.openInterestData.entries()).map(([symbol, data]) => [
+          symbol,
+          {
+            openInterest: data.openInterest,
+            previousOI: data.previousOI,
+            deltaOI: data.deltaOI,
+            price: data.price,
+            timestamp: data.timestamp
           }
         ])
       )
@@ -161,11 +202,12 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private subscribeToTrades() {
-    // 🟢 Suscripciones tanto a trades como a orderbook
+    // 🟢 Suscripciones a trades, orderbook y open interest
     const tradeSubscriptions = this.symbols.map(symbol => `publicTrade.${symbol}`);
     const orderbookSubscriptions = this.symbols.map(symbol => `orderbook.1.${symbol}`);
+    const openInterestSubscriptions = this.symbols.map(symbol => `openInterest.${symbol}`); // 🟢 Open Interest
     
-    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions];
+    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions, ...openInterestSubscriptions];
     
     const message = {
       op: 'subscribe',
@@ -194,6 +236,11 @@ export class BybitWebSocketService implements OnModuleInit {
       // 🟢 Procesar orderbook
       if (message.topic && message.topic.startsWith('orderbook.1.') && message.data) {
         this.processOrderbook(message);
+      }
+
+      // 🟢 Procesar Open Interest
+      if (message.topic && message.topic.startsWith('openInterest.') && message.data) {
+        this.processOpenInterest(message);
       }
     } catch (error) {
       this.logger.error('❌ Error procesando mensaje:', error);
@@ -398,5 +445,82 @@ export class BybitWebSocketService implements OnModuleInit {
     });
 
     this.logger.debug(`📊 Orderbook ${symbol}: Bid=${bidPrice}@${bidSize}, Ask=${askPrice}@${askSize}, Spread=${(askPrice-bidPrice).toFixed(4)}`);
+  }
+
+  private startOpenInterestTimer() {
+    if (this.openInterestTimer) {
+      clearInterval(this.openInterestTimer);
+    }
+    
+    // 🟢 Usar la variable del timer
+    this.openInterestTimer = setInterval(() => {
+      if (this.isPaused) return; // 🟢 No agregar si está pausado
+      
+      const now = new Date();
+      now.setMilliseconds(0); // Normalizar al segundo exacto
+      
+      this.saveOpenInterestData(now);
+    }, 1000);
+  }
+
+  private async saveOpenInterestData(timestamp: Date) {
+    if (this.isPaused) return; // 🟢 No guardar si está pausado
+    
+    const promises: Promise<OpenInterest>[] = [];
+
+    for (const [symbol, data] of this.openInterestData.entries()) {
+      const deltaOI = data.openInterest - data.previousOI;
+      const changePercent = data.previousOI > 0 ? (deltaOI / data.previousOI) * 100 : 0;
+
+      const openInterestEntity = new OpenInterest();
+      openInterestEntity.symbol = symbol;
+      openInterestEntity.timestamp = timestamp;
+      openInterestEntity.open_interest = data.openInterest;
+      openInterestEntity.delta_oi = deltaOI;
+      openInterestEntity.price = data.price;
+      openInterestEntity.oi_change_percent = changePercent;
+      openInterestEntity.next_time = data.nextTime;
+      openInterestEntity.volume_24h = 0; // Por ahora 0, se puede agregar después
+
+      promises.push(this.openInterestRepository.save(openInterestEntity));
+    }
+
+    if (promises.length > 0) {
+      try {
+        await Promise.all(promises);
+        this.logger.debug(`💰 Guardados ${promises.length} datos de Open Interest para ${timestamp.toISOString()}`);
+      } catch (error) {
+        this.logger.error('❌ Error guardando datos de Open Interest:', error);
+      }
+    }
+  }
+
+  // 🟢 Nuevo método para procesar Open Interest
+  private processOpenInterest(message: any) {
+    if (this.isPaused) return; // 🟢 No procesar si está pausado
+    
+    const oiData: BybitOpenInterest = message.data;
+    const symbol = oiData.symbol;
+
+    // Obtener precio actual del orderbook o usar el último conocido
+    const orderbookPrice = this.orderbookData.get(symbol);
+    const currentPrice = orderbookPrice ? orderbookPrice.bidPrice : 0;
+
+    // Obtener OI anterior si existe
+    const previousData = this.openInterestData.get(symbol);
+    const previousOI = previousData ? previousData.openInterest : parseFloat(oiData.openInterest);
+
+    // Actualizar datos de Open Interest
+    this.openInterestData.set(symbol, {
+      symbol,
+      openInterest: parseFloat(oiData.openInterest),
+      previousOI: previousOI,
+      deltaOI: parseFloat(oiData.openInterest) - previousOI,
+      price: currentPrice,
+      timestamp: new Date(),
+      nextTime: parseInt(oiData.nextTime)
+    });
+
+    this.logger.debug(`💰 Open Interest ${symbol}: OI=${oiData.openInterest}, ΔOI=${(parseFloat(oiData.openInterest) - previousOI).toFixed(2)}, Price=${currentPrice}`);
   }
 } 
