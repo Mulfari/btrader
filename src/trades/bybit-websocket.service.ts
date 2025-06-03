@@ -25,13 +25,6 @@ interface BybitOrderbook {
   seq: number;      // sequence number
 }
 
-interface BybitOpenInterest {
-  symbol: string;           // symbol
-  openInterest: string;     // open interest value
-  timestamp: string;        // timestamp
-  nextTime: string;         // next update time
-}
-
 interface TradeAccumulator {
   buyVolume: number;
   sellVolume: number;
@@ -202,12 +195,11 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private subscribeToTrades() {
-    // 🟢 Suscripciones a trades, orderbook y open interest
+    // 🟢 Suscripciones solo a trades y orderbook (Open Interest va por REST API)
     const tradeSubscriptions = this.symbols.map(symbol => `publicTrade.${symbol}`);
     const orderbookSubscriptions = this.symbols.map(symbol => `orderbook.1.${symbol}`);
-    const openInterestSubscriptions = this.symbols.map(symbol => `openInterest.${symbol}`); // 🟢 Open Interest
     
-    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions, ...openInterestSubscriptions];
+    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions];
     
     const message = {
       op: 'subscribe',
@@ -233,14 +225,9 @@ export class BybitWebSocketService implements OnModuleInit {
         this.processTrades(message);
       }
 
-      // 🟢 Procesar orderbook
+      // Procesar orderbook
       if (message.topic && message.topic.startsWith('orderbook.1.') && message.data) {
         this.processOrderbook(message);
-      }
-
-      // 🟢 Procesar Open Interest
-      if (message.topic && message.topic.startsWith('openInterest.') && message.data) {
-        this.processOpenInterest(message);
       }
     } catch (error) {
       this.logger.error('❌ Error procesando mensaje:', error);
@@ -452,75 +439,93 @@ export class BybitWebSocketService implements OnModuleInit {
       clearInterval(this.openInterestTimer);
     }
     
-    // 🟢 Usar la variable del timer
+    // 🟢 Consultar Open Interest vía REST API cada 30 segundos
     this.openInterestTimer = setInterval(() => {
-      if (this.isPaused) return; // 🟢 No agregar si está pausado
+      if (this.isPaused) return;
       
-      const now = new Date();
-      now.setMilliseconds(0); // Normalizar al segundo exacto
-      
-      this.saveOpenInterestData(now);
-    }, 1000);
+      this.fetchOpenInterestData();
+    }, 30000); // 30 segundos
+    
+    // Ejecutar inmediatamente al iniciar
+    if (!this.isPaused) {
+      this.fetchOpenInterestData();
+    }
   }
 
-  private async saveOpenInterestData(timestamp: Date) {
-    if (this.isPaused) return; // 🟢 No guardar si está pausado
-    
-    const promises: Promise<OpenInterest>[] = [];
+  // 🟢 Método para consultar Open Interest vía REST API
+  private async fetchOpenInterestData() {
+    if (this.isPaused) return;
 
-    for (const [symbol, data] of this.openInterestData.entries()) {
-      const deltaOI = data.openInterest - data.previousOI;
-      const changePercent = data.previousOI > 0 ? (deltaOI / data.previousOI) * 100 : 0;
-
-      const openInterestEntity = new OpenInterest();
-      openInterestEntity.symbol = symbol;
-      openInterestEntity.timestamp = timestamp;
-      openInterestEntity.open_interest = data.openInterest;
-      openInterestEntity.delta_oi = deltaOI;
-      openInterestEntity.price = data.price;
-      openInterestEntity.oi_change_percent = changePercent;
-      openInterestEntity.next_time = data.nextTime;
-      openInterestEntity.volume_24h = 0; // Por ahora 0, se puede agregar después
-
-      promises.push(this.openInterestRepository.save(openInterestEntity));
-    }
-
-    if (promises.length > 0) {
+    for (const symbol of this.symbols) {
       try {
-        await Promise.all(promises);
-        this.logger.debug(`💰 Guardados ${promises.length} datos de Open Interest para ${timestamp.toISOString()}`);
+        const url = `https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${symbol}`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.result && data.result.list && data.result.list.length > 0) {
+          const oiData = data.result.list[0];
+          await this.processOpenInterestData(symbol, oiData);
+        }
       } catch (error) {
-        this.logger.error('❌ Error guardando datos de Open Interest:', error);
+        this.logger.error(`❌ Error obteniendo Open Interest para ${symbol}:`, error);
       }
     }
   }
 
-  // 🟢 Nuevo método para procesar Open Interest
-  private processOpenInterest(message: any) {
-    if (this.isPaused) return; // 🟢 No procesar si está pausado
+  // 🟢 Procesar datos de Open Interest obtenidos de REST API
+  private async processOpenInterestData(symbol: string, oiData: any) {
+    const currentOI = parseFloat(oiData.openInterest);
     
-    const oiData: BybitOpenInterest = message.data;
-    const symbol = oiData.symbol;
-
-    // Obtener precio actual del orderbook o usar el último conocido
+    // Obtener precio actual del orderbook
     const orderbookPrice = this.orderbookData.get(symbol);
-    const currentPrice = orderbookPrice ? orderbookPrice.bidPrice : 0;
+    const currentPrice = orderbookPrice ? (orderbookPrice.bidPrice + orderbookPrice.askPrice) / 2 : 0;
 
     // Obtener OI anterior si existe
     const previousData = this.openInterestData.get(symbol);
-    const previousOI = previousData ? previousData.openInterest : parseFloat(oiData.openInterest);
+    const previousOI = previousData ? previousData.openInterest : currentOI;
+    const deltaOI = currentOI - previousOI;
 
     // Actualizar datos de Open Interest
     this.openInterestData.set(symbol, {
       symbol,
-      openInterest: parseFloat(oiData.openInterest),
+      openInterest: currentOI,
       previousOI: previousOI,
-      deltaOI: parseFloat(oiData.openInterest) - previousOI,
+      deltaOI: deltaOI,
       price: currentPrice,
       timestamp: new Date(),
-      nextTime: parseInt(oiData.nextTime)
+      nextTime: Date.now() + 30000 // Próxima actualización en 30s
     });
 
-    this.logger.debug(`💰 Open Interest ${symbol}: OI=${oiData.openInterest}, ΔOI=${(parseFloat(oiData.openInterest) - previousOI).toFixed(2)}, Price=${currentPrice}`);
+    this.logger.log(`💰 Open Interest ${symbol}: OI=${currentOI.toLocaleString()}, ΔOI=${deltaOI > 0 ? '+' : ''}${deltaOI.toFixed(2)}, Price=$${currentPrice.toFixed(2)}`);
+
+    // Guardar en base de datos inmediatamente
+    await this.saveOpenInterestSnapshot(symbol, currentOI, deltaOI, currentPrice);
+  }
+
+  // 🟢 Guardar snapshot individual de Open Interest
+  private async saveOpenInterestSnapshot(symbol: string, openInterest: number, deltaOI: number, price: number) {
+    try {
+      const changePercent = deltaOI !== 0 && openInterest !== deltaOI ? (deltaOI / (openInterest - deltaOI)) * 100 : 0;
+
+      const openInterestEntity = new OpenInterest();
+      openInterestEntity.symbol = symbol;
+      openInterestEntity.timestamp = new Date();
+      openInterestEntity.open_interest = openInterest;
+      openInterestEntity.delta_oi = deltaOI;
+      openInterestEntity.price = price;
+      openInterestEntity.oi_change_percent = changePercent;
+      openInterestEntity.next_time = Date.now() + 30000;
+      openInterestEntity.volume_24h = 0;
+
+      await this.openInterestRepository.save(openInterestEntity);
+      this.logger.debug(`💾 Open Interest guardado: ${symbol} - OI=${openInterest.toLocaleString()}`);
+    } catch (error) {
+      this.logger.error('❌ Error guardando Open Interest:', error);
+    }
   }
 } 
