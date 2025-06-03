@@ -13,6 +13,8 @@ import { TradesService } from './trades.service';
 import { BybitWebSocketService } from './bybit-websocket.service';
 import { AdvancedAnalyticsService } from './advanced-analytics.service';
 import { AdvancedAnalyticsController } from './advanced-analytics.controller';
+import { AnalyticsSchedulerService } from './analytics-scheduler.service';
+import { AnalyticsSchedulerController } from './analytics-scheduler.controller';
 
 @Module({
   imports: [
@@ -27,8 +29,22 @@ import { AdvancedAnalyticsController } from './advanced-analytics.controller';
       MarketSentiment
     ])
   ],
-  controllers: [TradesController, AdvancedAnalyticsController],
-  providers: [TradesService, BybitWebSocketService, AdvancedAnalyticsService],
-  exports: [TradesService, BybitWebSocketService, AdvancedAnalyticsService],
+  controllers: [
+    TradesController, 
+    AdvancedAnalyticsController,
+    AnalyticsSchedulerController,
+  ],
+  providers: [
+    TradesService, 
+    BybitWebSocketService,
+    AdvancedAnalyticsService,
+    AnalyticsSchedulerService,
+  ],
+  exports: [
+    TradesService, 
+    BybitWebSocketService,
+    AdvancedAnalyticsService,
+    AnalyticsSchedulerService,
+  ],
 })
 export class TradesModule {} 
