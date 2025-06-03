@@ -1,9 +1,13 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Post } from '@nestjs/common';
 import { TradesService } from './trades.service';
+import { BybitWebSocketService } from './bybit-websocket.service';
 
 @Controller('trades')
 export class TradesController {
-  constructor(private readonly tradesService: TradesService) {}
+  constructor(
+    private readonly tradesService: TradesService,
+    private readonly bybitService: BybitWebSocketService,
+  ) {}
 
   // Obtener datos actuales (acumulador en memoria)
   @Get(':symbol/current')
@@ -51,5 +55,36 @@ export class TradesController {
   @Get('symbols')
   async getAvailableSymbols() {
     return this.tradesService.getAvailableSymbols();
+  }
+
+  // 🟢 Control de recolección de datos
+  @Post('control/pause')
+  async pauseDataCollection() {
+    this.bybitService.pause();
+    return { 
+      message: '⏸️ Recolección de datos pausada exitosamente',
+      status: 'paused',
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  @Post('control/resume')
+  async resumeDataCollection() {
+    this.bybitService.resume();
+    return { 
+      message: '▶️ Recolección de datos reanudada exitosamente',
+      status: 'active',
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  @Get('control/status')
+  async getCollectionStatus() {
+    const status = this.bybitService.getStatus();
+    return {
+      ...status,
+      message: status.isPaused ? 'Recolección pausada' : 'Recolección activa',
+      timestamp: new Date().toISOString()
+    };
   }
 } 

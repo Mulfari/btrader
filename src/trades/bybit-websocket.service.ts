@@ -31,6 +31,8 @@ export class BybitWebSocketService implements OnModuleInit {
   private ws: WebSocket;
   private accumulators = new Map<string, TradeAccumulator>();
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
+  private isPaused = false; // 🟢 Control de pausa
+  private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
 
   constructor(
     @InjectRepository(TradeAggregate)
@@ -42,7 +44,47 @@ export class BybitWebSocketService implements OnModuleInit {
     this.startAggregationTimer();
   }
 
+  // 🟢 Métodos de control
+  pause() {
+    this.isPaused = true;
+    if (this.aggregationTimer) {
+      clearInterval(this.aggregationTimer);
+      this.aggregationTimer = null;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.close();
+    }
+    this.logger.warn('⏸️ Recolección de datos PAUSADA');
+  }
+
+  resume() {
+    this.isPaused = false;
+    this.connect();
+    this.startAggregationTimer();
+    this.logger.log('▶️ Recolección de datos REANUDADA');
+  }
+
+  getStatus() {
+    return {
+      isPaused: this.isPaused,
+      isConnected: this.ws?.readyState === WebSocket.OPEN,
+      symbols: this.symbols,
+      accumulatorData: Object.fromEntries(
+        Array.from(this.accumulators.entries()).map(([symbol, acc]) => [
+          symbol,
+          {
+            buyVolume: acc.buyVolume,
+            sellVolume: acc.sellVolume,
+            totalTrades: acc.buyCount + acc.sellCount
+          }
+        ])
+      )
+    };
+  }
+
   private connect() {
+    if (this.isPaused) return; // 🟢 No conectar si está pausado
+    
     try {
       this.ws = new WebSocket('wss://stream.bybit.com/v5/public/linear');
       
@@ -56,8 +98,10 @@ export class BybitWebSocketService implements OnModuleInit {
       });
 
       this.ws.on('close', () => {
-        this.logger.warn('🔌 WebSocket desconectado. Reconectando en 5s...');
-        setTimeout(() => this.connect(), 5000);
+        if (!this.isPaused) { // 🟢 Solo reconectar si no está pausado
+          this.logger.warn('🔌 WebSocket desconectado. Reconectando en 5s...');
+          setTimeout(() => this.connect(), 5000);
+        }
       });
 
       this.ws.on('error', (error) => {
@@ -66,7 +110,9 @@ export class BybitWebSocketService implements OnModuleInit {
 
     } catch (error) {
       this.logger.error('❌ Error conectando WebSocket:', error);
-      setTimeout(() => this.connect(), 5000);
+      if (!this.isPaused) { // 🟢 Solo reconectar si no está pausado
+        setTimeout(() => this.connect(), 5000);
+      }
     }
   }
 
@@ -102,6 +148,8 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private processTrades(message: any) {
+    if (this.isPaused) return; // 🟢 No procesar si está pausado
+    
     const trades: BybitTrade[] = message.data;
     
     trades.forEach(trade => {
@@ -141,8 +189,14 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private startAggregationTimer() {
-    // Cada segundo en el segundo 0
-    setInterval(() => {
+    if (this.aggregationTimer) {
+      clearInterval(this.aggregationTimer);
+    }
+    
+    // 🟢 Usar la variable del timer
+    this.aggregationTimer = setInterval(() => {
+      if (this.isPaused) return; // 🟢 No agregar si está pausado
+      
       const now = new Date();
       now.setMilliseconds(0); // Normalizar al segundo exacto
       
@@ -151,6 +205,8 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private async saveAggregatedData(timestamp: Date) {
+    if (this.isPaused) return; // 🟢 No guardar si está pausado
+    
     const promises: Promise<TradeAggregate>[] = [];
 
     for (const [symbol, acc] of this.accumulators.entries()) {
