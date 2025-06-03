@@ -29,16 +29,16 @@ async function bootstrap() {
     }),
   );
 
-  const isDevelopment = process.env.NODE_ENV === 'development';
+  const isDevelopment = process.env.NODE_ENV !== 'production';
 
   const corsOptions: CorsOptions = {
-    origin: isDevelopment 
-      ? true // Permitir todos los orígenes en desarrollo
-      : [
-          'http://localhost:3000',
-          'https://trader.mulfex.com',
-          'https://btrader-production.up.railway.app'
-        ],
+    origin: [
+      'http://localhost:3000',
+      'http://localhost:3001', 
+      'https://trader.mulfex.com',
+      'https://btrader-production.up.railway.app',
+      ...(isDevelopment ? ['*'] : [])
+    ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type', 
