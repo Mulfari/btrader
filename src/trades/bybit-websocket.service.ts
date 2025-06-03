@@ -5,6 +5,7 @@ import * as WebSocket from 'ws';
 import { TradeAggregate } from './trade-aggregate.entity';
 import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
+import { FundingRate } from './funding-rate.entity';
 
 interface BybitTrade {
   T: number;        // timestamp
@@ -56,6 +57,16 @@ interface OpenInterestData {
   nextTime: number;
 }
 
+interface FundingRateData {
+  symbol: string;
+  currentFundingRate: number;
+  nextFundingTime: number;
+  markPrice: number;
+  indexPrice: number;
+  timestamp: Date;
+  predictedFundingRate: number;
+}
+
 @Injectable()
 export class BybitWebSocketService implements OnModuleInit {
   private readonly logger = new Logger(BybitWebSocketService.name);
@@ -63,11 +74,13 @@ export class BybitWebSocketService implements OnModuleInit {
   private accumulators = new Map<string, TradeAccumulator>();
   private orderbookData = new Map<string, OrderbookData>();
   private openInterestData = new Map<string, OpenInterestData>();
+  private fundingRateData = new Map<string, FundingRateData>();
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
   private isPaused = false; // 🟢 Control de pausa
   private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
   private orderbookTimer: NodeJS.Timeout | null = null; // 🟢 Timer para snapshots del orderbook
   private openInterestTimer: NodeJS.Timeout | null = null; // 🟢 Timer para OI
+  private fundingRateTimer: NodeJS.Timeout | null = null; // 🟢 Timer para Funding Rate
 
   constructor(
     @InjectRepository(TradeAggregate)
@@ -76,6 +89,8 @@ export class BybitWebSocketService implements OnModuleInit {
     private orderbookRepository: Repository<OrderbookSnapshot>,
     @InjectRepository(OpenInterest)
     private openInterestRepository: Repository<OpenInterest>,
+    @InjectRepository(FundingRate)
+    private fundingRateRepository: Repository<FundingRate>,
   ) {}
 
   onModuleInit() {
@@ -83,6 +98,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.startAggregationTimer();
     this.startOrderbookTimer(); // 🟢 Iniciar timer del orderbook
     this.startOpenInterestTimer(); // 🟢 Iniciar timer de Open Interest
+    this.startFundingRateTimer(); // 🟢 Iniciar timer de Funding Rate
   }
 
   // 🟢 Métodos de control
@@ -100,6 +116,10 @@ export class BybitWebSocketService implements OnModuleInit {
       clearInterval(this.openInterestTimer);
       this.openInterestTimer = null;
     }
+    if (this.fundingRateTimer) { // 🟢 Parar timer de Funding Rate
+      clearInterval(this.fundingRateTimer);
+      this.fundingRateTimer = null;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close();
     }
@@ -112,6 +132,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.startAggregationTimer();
     this.startOrderbookTimer(); // 🟢 Reiniciar timer del orderbook
     this.startOpenInterestTimer(); // 🟢 Reiniciar timer de Open Interest
+    this.startFundingRateTimer(); // 🟢 Reiniciar timer de Funding Rate
     this.logger.log('▶️ Recolección de datos REANUDADA');
   }
 
@@ -153,6 +174,20 @@ export class BybitWebSocketService implements OnModuleInit {
             previousOI: data.previousOI,
             deltaOI: data.deltaOI,
             price: data.price,
+            timestamp: data.timestamp
+          }
+        ])
+      ),
+      // 🟢 Agregar datos de Funding Rate al status
+      fundingRateData: Object.fromEntries(
+        Array.from(this.fundingRateData.entries()).map(([symbol, data]) => [
+          symbol,
+          {
+            currentFundingRate: data.currentFundingRate,
+            predictedFundingRate: data.predictedFundingRate,
+            nextFundingTime: new Date(data.nextFundingTime).toISOString(),
+            markPrice: data.markPrice,
+            indexPrice: data.indexPrice,
             timestamp: data.timestamp
           }
         ])
@@ -530,6 +565,195 @@ export class BybitWebSocketService implements OnModuleInit {
       this.logger.debug(`💾 Open Interest guardado: ${symbol} - OI=${openInterest.toLocaleString()}`);
     } catch (error) {
       this.logger.error('❌ Error guardando Open Interest:', error);
+    }
+  }
+
+  private startFundingRateTimer() {
+    if (this.fundingRateTimer) {
+      clearInterval(this.fundingRateTimer);
+    }
+    
+    // 🟢 Consultar Funding Rate vía REST API cada 1 hora (3600000 ms)
+    this.fundingRateTimer = setInterval(() => {
+      if (this.isPaused) return;
+      
+      this.fetchFundingRateData();
+    }, 3600000); // 1 hora
+    
+    // Ejecutar inmediatamente al iniciar
+    if (!this.isPaused) {
+      this.fetchFundingRateData();
+    }
+  }
+
+  // 🟢 Método para consultar Funding Rate vía REST API tickers
+  private async fetchFundingRateData() {
+    if (this.isPaused) return;
+
+    for (const symbol of this.symbols) {
+      try {
+        // ✅ Usar endpoint de tickers que incluye funding rate
+        const url = `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.retCode === 0 && data.result && data.result.list && data.result.list.length > 0) {
+          const tickerData = data.result.list[0];
+          await this.processFundingRateData(symbol, tickerData);
+        } else {
+          this.logger.warn(`⚠️ No se encontraron datos de Funding Rate para ${symbol}: ${data.retMsg || 'Unknown error'}`);
+        }
+      } catch (error) {
+        this.logger.error(`❌ Error obteniendo Funding Rate para ${symbol}:`, error);
+      }
+    }
+  }
+
+  // 🟢 Procesar datos de Funding Rate obtenidos de REST API
+  private async processFundingRateData(symbol: string, tickerData: any) {
+    const currentFundingRate = parseFloat(tickerData.fundingRate);
+    const nextFundingTime = parseInt(tickerData.nextFundingTime);
+    const markPrice = parseFloat(tickerData.markPrice);
+    const indexPrice = parseFloat(tickerData.indexPrice);
+
+    // Calcular predicted funding rate (estimado basado en tendencia actual)
+    const previousData = this.fundingRateData.get(symbol);
+    let predictedFundingRate = currentFundingRate; // Default: same as current
+    
+    if (previousData) {
+      // Calcular tendencia simple
+      const trend = currentFundingRate - previousData.currentFundingRate;
+      predictedFundingRate = currentFundingRate + (trend * 0.5); // 50% de la tendencia
+    }
+
+    // Actualizar datos de Funding Rate
+    this.fundingRateData.set(symbol, {
+      symbol,
+      currentFundingRate,
+      nextFundingTime,
+      markPrice,
+      indexPrice,
+      timestamp: new Date(),
+      predictedFundingRate
+    });
+
+    this.logger.log(`💰 Funding Rate ${symbol}: Current=${(currentFundingRate * 100).toFixed(4)}%, Predicted=${(predictedFundingRate * 100).toFixed(4)}%, Next=${new Date(nextFundingTime).toISOString()}`);
+
+    // Guardar en base de datos inmediatamente
+    await this.saveFundingRateSnapshot(symbol, currentFundingRate, predictedFundingRate, nextFundingTime, markPrice, indexPrice);
+  }
+
+  // 🟢 Guardar snapshot de Funding Rate con análisis
+  private async saveFundingRateSnapshot(
+    symbol: string, 
+    currentFundingRate: number, 
+    predictedFundingRate: number, 
+    nextFundingTime: number, 
+    markPrice: number, 
+    indexPrice: number
+  ) {
+    try {
+      // 🎯 Calcular análisis de sesgo direccional
+      const analysis = await this.analyzeFundingRateBias(symbol, currentFundingRate);
+
+      const fundingRateEntity = new FundingRate();
+      fundingRateEntity.symbol = symbol;
+      fundingRateEntity.timestamp = new Date();
+      fundingRateEntity.current_funding_rate = currentFundingRate;
+      fundingRateEntity.predicted_funding_rate = predictedFundingRate;
+      fundingRateEntity.next_funding_time = nextFundingTime;
+      fundingRateEntity.mark_price = markPrice;
+      fundingRateEntity.index_price = indexPrice;
+      
+      // Análisis de sesgo
+      fundingRateEntity.funding_rate_8h_avg = analysis.avg8h;
+      fundingRateEntity.funding_rate_24h_avg = analysis.avg24h;
+      fundingRateEntity.market_sentiment = analysis.sentiment;
+      fundingRateEntity.long_short_bias = analysis.bias;
+      fundingRateEntity.is_extreme = analysis.isExtreme;
+      fundingRateEntity.reversal_signal = analysis.reversalSignal || '';
+
+      await this.fundingRateRepository.save(fundingRateEntity);
+      this.logger.debug(`💾 Funding Rate guardado: ${symbol} - Rate=${(currentFundingRate * 100).toFixed(4)}%, Sentiment=${analysis.sentiment}`);
+    } catch (error) {
+      this.logger.error('❌ Error guardando Funding Rate:', error);
+    }
+  }
+
+  // 🎯 Análisis avanzado de sesgo direccional
+  private async analyzeFundingRateBias(symbol: string, currentRate: number) {
+    try {
+      // Obtener datos históricos para cálculos
+      const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const recent8h = await this.fundingRateRepository
+        .createQueryBuilder('fr')
+        .where('fr.symbol = :symbol', { symbol })
+        .andWhere('fr.timestamp >= :eightHoursAgo', { eightHoursAgo })
+        .getMany();
+
+      const recent24h = await this.fundingRateRepository
+        .createQueryBuilder('fr')
+        .where('fr.symbol = :symbol', { symbol })
+        .andWhere('fr.timestamp >= :twentyFourHoursAgo', { twentyFourHoursAgo })
+        .getMany();
+
+      // Calcular promedios
+      const avg8h = recent8h.length > 0 
+        ? recent8h.reduce((sum, r) => sum + parseFloat(r.current_funding_rate.toString()), 0) / recent8h.length
+        : currentRate;
+
+      const avg24h = recent24h.length > 0 
+        ? recent24h.reduce((sum, r) => sum + parseFloat(r.current_funding_rate.toString()), 0) / recent24h.length
+        : currentRate;
+
+      // 🎯 Determinar sentimiento del mercado
+      let sentiment = 'neutral';
+      if (currentRate > 0.001) sentiment = 'bullish_heavy';        // >0.1% = longs muy apalancados
+      else if (currentRate > 0.0005) sentiment = 'bullish_moderate'; // >0.05% = longs moderados
+      else if (currentRate < -0.001) sentiment = 'bearish_heavy';   // <-0.1% = shorts muy apalancados  
+      else if (currentRate < -0.0005) sentiment = 'bearish_moderate'; // <-0.05% = shorts moderados
+
+      // 🎯 Calcular sesgo long/short
+      const bias = currentRate * 10000; // Convertir a basis points para mejor lectura
+
+      // 🎯 Detectar niveles extremos
+      const isExtreme = Math.abs(currentRate) > 0.002; // >0.2% es extremo
+
+      // 🎯 Señales de reversal
+      let reversalSignal: string | null = null;
+      if (currentRate > 0.0015 && avg8h > 0.001) {
+        reversalSignal = 'bearish_reversal_possible'; // Longs muy cargados
+      } else if (currentRate < -0.0015 && avg8h < -0.001) {
+        reversalSignal = 'bullish_reversal_possible'; // Shorts muy cargados
+      } else if (Math.abs(currentRate - avg24h) > 0.001) {
+        reversalSignal = 'funding_divergence'; // Divergencia significativa
+      }
+
+      return {
+        avg8h,
+        avg24h,
+        sentiment,
+        bias,
+        isExtreme,
+        reversalSignal
+      };
+    } catch (error) {
+      this.logger.error('❌ Error en análisis de Funding Rate:', error);
+      return {
+        avg8h: currentRate,
+        avg24h: currentRate,
+        sentiment: 'neutral',
+        bias: 0,
+        isExtreme: false,
+        reversalSignal: ''
+      };
     }
   }
 } 

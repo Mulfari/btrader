@@ -6,9 +6,17 @@ import { OpenInterest } from './open-interest.entity';
 import { TradesController } from './trades.controller';
 import { TradesService } from './trades.service';
 import { BybitWebSocketService } from './bybit-websocket.service';
+import { FundingRate } from './funding-rate.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([TradeAggregate, OrderbookSnapshot, OpenInterest])],
+  imports: [
+    TypeOrmModule.forFeature([
+      TradeAggregate, 
+      OrderbookSnapshot, 
+      OpenInterest,
+      FundingRate
+    ])
+  ],
   controllers: [TradesController],
   providers: [TradesService, BybitWebSocketService],
   exports: [TradesService, BybitWebSocketService],
