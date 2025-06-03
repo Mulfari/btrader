@@ -458,7 +458,8 @@ export class BybitWebSocketService implements OnModuleInit {
 
     for (const symbol of this.symbols) {
       try {
-        const url = `https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${symbol}`;
+        // ✅ URL corregida con parámetros obligatorios
+        const url = `https://api.bybit.com/v5/market/open-interest?category=linear&symbol=${symbol}&intervalTime=5min&limit=1`;
         const response = await fetch(url);
         
         if (!response.ok) {
@@ -467,9 +468,11 @@ export class BybitWebSocketService implements OnModuleInit {
 
         const data = await response.json();
         
-        if (data.result && data.result.list && data.result.list.length > 0) {
-          const oiData = data.result.list[0];
+        if (data.retCode === 0 && data.result && data.result.list && data.result.list.length > 0) {
+          const oiData = data.result.list[0]; // Tomar el dato más reciente
           await this.processOpenInterestData(symbol, oiData);
+        } else {
+          this.logger.warn(`⚠️ No se encontraron datos de Open Interest para ${symbol}: ${data.retMsg || 'Unknown error'}`);
         }
       } catch (error) {
         this.logger.error(`❌ Error obteniendo Open Interest para ${symbol}:`, error);
@@ -480,6 +483,7 @@ export class BybitWebSocketService implements OnModuleInit {
   // 🟢 Procesar datos de Open Interest obtenidos de REST API
   private async processOpenInterestData(symbol: string, oiData: any) {
     const currentOI = parseFloat(oiData.openInterest);
+    const timestamp = parseInt(oiData.timestamp);
     
     // Obtener precio actual del orderbook
     const orderbookPrice = this.orderbookData.get(symbol);
@@ -497,11 +501,11 @@ export class BybitWebSocketService implements OnModuleInit {
       previousOI: previousOI,
       deltaOI: deltaOI,
       price: currentPrice,
-      timestamp: new Date(),
+      timestamp: new Date(timestamp),
       nextTime: Date.now() + 30000 // Próxima actualización en 30s
     });
 
-    this.logger.log(`💰 Open Interest ${symbol}: OI=${currentOI.toLocaleString()}, ΔOI=${deltaOI > 0 ? '+' : ''}${deltaOI.toFixed(2)}, Price=$${currentPrice.toFixed(2)}`);
+    this.logger.log(`💰 Open Interest ${symbol}: OI=${currentOI.toLocaleString()}, ΔOI=${deltaOI > 0 ? '+' : ''}${deltaOI.toFixed(2)}, Price=$${currentPrice.toFixed(2)}, Timestamp=${new Date(timestamp).toISOString()}`);
 
     // Guardar en base de datos inmediatamente
     await this.saveOpenInterestSnapshot(symbol, currentOI, deltaOI, currentPrice);
