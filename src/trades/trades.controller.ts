@@ -87,4 +87,53 @@ export class TradesController {
       timestamp: new Date().toISOString()
     };
   }
+
+  // 🟢 Endpoints para Orderbook
+  @Get(':symbol/orderbook/current')
+  async getCurrentOrderbook(@Param('symbol') symbol: string) {
+    const status = this.bybitService.getStatus();
+    const orderbookData = status.orderbookData[symbol.toUpperCase()];
+    
+    if (!orderbookData) {
+      return {
+        symbol: symbol.toUpperCase(),
+        bidPrice: 0,
+        askPrice: 0,
+        spread: 0,
+        midPrice: 0,
+        imbalance: 0.5,
+        lastUpdate: new Date(),
+        message: 'Sin datos de orderbook disponibles'
+      };
+    }
+
+    return {
+      symbol: symbol.toUpperCase(),
+      ...orderbookData,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  @Get(':symbol/orderbook/history')
+  async getOrderbookHistory(
+    @Param('symbol') symbol: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const fromDate = from ? new Date(from) : new Date(Date.now() - 60 * 60 * 1000); // 1h por defecto
+    const toDate = to ? new Date(to) : new Date();
+    const limitNum = limit ? parseInt(limit) : 1000;
+
+    return this.tradesService.getOrderbookHistory(symbol.toUpperCase(), fromDate, toDate, limitNum);
+  }
+
+  @Get(':symbol/orderbook/spread-analysis')
+  async getSpreadAnalysis(
+    @Param('symbol') symbol: string,
+    @Query('duration') duration?: string,
+  ) {
+    const durationMinutes = duration ? parseInt(duration) : 60; // 1 hora por defecto
+    return this.tradesService.getSpreadAnalysis(symbol.toUpperCase(), durationMinutes);
+  }
 } 

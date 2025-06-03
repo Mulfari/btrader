@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as WebSocket from 'ws';
 import { TradeAggregate } from './trade-aggregate.entity';
+import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 
 interface BybitTrade {
   T: number;        // timestamp
@@ -15,6 +16,14 @@ interface BybitTrade {
   BT: boolean;      // is block trade
 }
 
+interface BybitOrderbook {
+  s: string;        // symbol
+  b: string[][];    // bids [price, size]
+  a: string[][];    // asks [price, size]
+  u: number;        // update id
+  seq: number;      // sequence number
+}
+
 interface TradeAccumulator {
   buyVolume: number;
   sellVolume: number;
@@ -25,23 +34,39 @@ interface TradeAccumulator {
   priceLow: number;
 }
 
+interface OrderbookData {
+  symbol: string;
+  bidPrice: number;
+  askPrice: number;
+  bidSize: number;
+  askSize: number;
+  updateId: number;
+  seq: number;
+  timestamp: Date;
+}
+
 @Injectable()
 export class BybitWebSocketService implements OnModuleInit {
   private readonly logger = new Logger(BybitWebSocketService.name);
   private ws: WebSocket;
   private accumulators = new Map<string, TradeAccumulator>();
+  private orderbookData = new Map<string, OrderbookData>();
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
   private isPaused = false; // 🟢 Control de pausa
   private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
+  private orderbookTimer: NodeJS.Timeout | null = null; // 🟢 Timer para snapshots del orderbook
 
   constructor(
     @InjectRepository(TradeAggregate)
     private tradeRepository: Repository<TradeAggregate>,
+    @InjectRepository(OrderbookSnapshot)
+    private orderbookRepository: Repository<OrderbookSnapshot>,
   ) {}
 
   onModuleInit() {
     this.connect();
     this.startAggregationTimer();
+    this.startOrderbookTimer(); // 🟢 Iniciar timer del orderbook
   }
 
   // 🟢 Métodos de control
@@ -50,6 +75,10 @@ export class BybitWebSocketService implements OnModuleInit {
     if (this.aggregationTimer) {
       clearInterval(this.aggregationTimer);
       this.aggregationTimer = null;
+    }
+    if (this.orderbookTimer) { // 🟢 Parar timer del orderbook
+      clearInterval(this.orderbookTimer);
+      this.orderbookTimer = null;
     }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close();
@@ -61,6 +90,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.isPaused = false;
     this.connect();
     this.startAggregationTimer();
+    this.startOrderbookTimer(); // 🟢 Reiniciar timer del orderbook
     this.logger.log('▶️ Recolección de datos REANUDADA');
   }
 
@@ -76,6 +106,20 @@ export class BybitWebSocketService implements OnModuleInit {
             buyVolume: acc.buyVolume,
             sellVolume: acc.sellVolume,
             totalTrades: acc.buyCount + acc.sellCount
+          }
+        ])
+      ),
+      // 🟢 Agregar datos del orderbook al status
+      orderbookData: Object.fromEntries(
+        Array.from(this.orderbookData.entries()).map(([symbol, data]) => [
+          symbol,
+          {
+            bidPrice: data.bidPrice,
+            askPrice: data.askPrice,
+            spread: data.askPrice - data.bidPrice,
+            midPrice: (data.bidPrice + data.askPrice) / 2,
+            imbalance: data.bidSize / (data.bidSize + data.askSize),
+            lastUpdate: data.timestamp
           }
         ])
       )
@@ -117,15 +161,19 @@ export class BybitWebSocketService implements OnModuleInit {
   }
 
   private subscribeToTrades() {
-    const subscriptions = this.symbols.map(symbol => `publicTrade.${symbol}`);
+    // 🟢 Suscripciones tanto a trades como a orderbook
+    const tradeSubscriptions = this.symbols.map(symbol => `publicTrade.${symbol}`);
+    const orderbookSubscriptions = this.symbols.map(symbol => `orderbook.1.${symbol}`);
+    
+    const allSubscriptions = [...tradeSubscriptions, ...orderbookSubscriptions];
     
     const message = {
       op: 'subscribe',
-      args: subscriptions
+      args: allSubscriptions
     };
 
     this.ws.send(JSON.stringify(message));
-    this.logger.log(`📡 Suscrito a: ${subscriptions.join(', ')}`);
+    this.logger.log(`📡 Suscrito a: ${allSubscriptions.join(', ')}`);
   }
 
   private handleMessage(data: WebSocket.Data) {
@@ -141,6 +189,11 @@ export class BybitWebSocketService implements OnModuleInit {
       // Procesar trades
       if (message.topic && message.topic.startsWith('publicTrade.') && message.data) {
         this.processTrades(message);
+      }
+
+      // 🟢 Procesar orderbook
+      if (message.topic && message.topic.startsWith('orderbook.1.') && message.data) {
+        this.processOrderbook(message);
       }
     } catch (error) {
       this.logger.error('❌ Error procesando mensaje:', error);
@@ -255,5 +308,95 @@ export class BybitWebSocketService implements OnModuleInit {
   // Método para obtener datos actuales (no guardados aún)
   getCurrentAccumulator(symbol: string): TradeAccumulator | null {
     return this.accumulators.get(symbol) || null;
+  }
+
+  private startOrderbookTimer() {
+    if (this.orderbookTimer) {
+      clearInterval(this.orderbookTimer);
+    }
+    
+    // 🟢 Usar la variable del timer
+    this.orderbookTimer = setInterval(() => {
+      if (this.isPaused) return; // 🟢 No agregar si está pausado
+      
+      const now = new Date();
+      now.setMilliseconds(0); // Normalizar al segundo exacto
+      
+      this.saveOrderbookData(now);
+    }, 1000);
+  }
+
+  private async saveOrderbookData(timestamp: Date) {
+    if (this.isPaused) return; // 🟢 No guardar si está pausado
+    
+    const promises: Promise<OrderbookSnapshot>[] = [];
+
+    for (const [symbol, data] of this.orderbookData.entries()) {
+      // Calcular métricas
+      const spread = data.askPrice - data.bidPrice;
+      const midPrice = (data.bidPrice + data.askPrice) / 2;
+      const totalSize = data.bidSize + data.askSize;
+      const imbalance = totalSize > 0 ? data.bidSize / totalSize : 0.5;
+
+      const snapshot = new OrderbookSnapshot();
+      snapshot.symbol = symbol;
+      snapshot.timestamp = timestamp;
+      snapshot.bid_price = data.bidPrice;
+      snapshot.ask_price = data.askPrice;
+      snapshot.bid_size = data.bidSize;
+      snapshot.ask_size = data.askSize;
+      snapshot.spread = spread;
+      snapshot.mid_price = midPrice;
+      snapshot.imbalance = imbalance;
+      snapshot.update_id = data.updateId;
+      snapshot.seq = data.seq;
+
+      promises.push(this.orderbookRepository.save(snapshot));
+    }
+
+    if (promises.length > 0) {
+      try {
+        await Promise.all(promises);
+        this.logger.debug(`📊 Guardados ${promises.length} snapshots del orderbook para ${timestamp.toISOString()}`);
+      } catch (error) {
+        this.logger.error('❌ Error guardando snapshots del orderbook:', error);
+      }
+    }
+  }
+
+  // 🟢 Nuevo método para procesar orderbook
+  private processOrderbook(message: any) {
+    if (this.isPaused) return; // 🟢 No procesar si está pausado
+    
+    const orderbookData: BybitOrderbook = message.data;
+    const symbol = orderbookData.s;
+
+    // Verificar que hay bids y asks
+    if (!orderbookData.b.length || !orderbookData.a.length) {
+      return;
+    }
+
+    // Extraer mejor bid y ask
+    const bestBid = orderbookData.b[0]; // [price, size]
+    const bestAsk = orderbookData.a[0]; // [price, size]
+
+    const bidPrice = parseFloat(bestBid[0]);
+    const bidSize = parseFloat(bestBid[1]);
+    const askPrice = parseFloat(bestAsk[0]);
+    const askSize = parseFloat(bestAsk[1]);
+
+    // Actualizar datos del orderbook
+    this.orderbookData.set(symbol, {
+      symbol,
+      bidPrice,
+      askPrice,
+      bidSize,
+      askSize,
+      updateId: orderbookData.u,
+      seq: orderbookData.seq,
+      timestamp: new Date()
+    });
+
+    this.logger.debug(`📊 Orderbook ${symbol}: Bid=${bidPrice}@${bidSize}, Ask=${askPrice}@${askSize}, Spread=${(askPrice-bidPrice).toFixed(4)}`);
   }
 } 

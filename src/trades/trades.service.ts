@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { TradeAggregate } from './trade-aggregate.entity';
+import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { BybitWebSocketService } from './bybit-websocket.service';
 
 @Injectable()
@@ -9,6 +10,8 @@ export class TradesService {
   constructor(
     @InjectRepository(TradeAggregate)
     private tradeRepository: Repository<TradeAggregate>,
+    @InjectRepository(OrderbookSnapshot)
+    private orderbookRepository: Repository<OrderbookSnapshot>,
     private bybitService: BybitWebSocketService,
   ) {}
 
@@ -191,5 +194,101 @@ export class TradesService {
       .getRawMany();
 
     return symbols.map(s => s.symbol);
+  }
+
+  // 🟢 Métodos para Orderbook
+  
+  // Obtener histórico del orderbook
+  async getOrderbookHistory(symbol: string, from: Date, to: Date, limit: number) {
+    return this.orderbookRepository.find({
+      where: {
+        symbol,
+        timestamp: Between(from, to)
+      },
+      order: { timestamp: 'DESC' },
+      take: limit
+    });
+  }
+
+  // Análisis de spread y métricas del orderbook
+  async getSpreadAnalysis(symbol: string, durationMinutes: number) {
+    const from = new Date(Date.now() - durationMinutes * 60 * 1000);
+    const to = new Date();
+
+    const data = await this.orderbookRepository.find({
+      where: {
+        symbol,
+        timestamp: Between(from, to)
+      },
+      order: { timestamp: 'ASC' }
+    });
+
+    if (data.length === 0) {
+      return {
+        symbol,
+        period: `${durationMinutes} minutos`,
+        message: 'Sin datos de orderbook disponibles',
+        analysis: null
+      };
+    }
+
+    // Calcular métricas
+    const spreads = data.map(d => Number(d.spread));
+    const imbalances = data.map(d => Number(d.imbalance));
+    const midPrices = data.map(d => Number(d.mid_price));
+
+    const avgSpread = spreads.reduce((a, b) => a + b, 0) / spreads.length;
+    const minSpread = Math.min(...spreads);
+    const maxSpread = Math.max(...spreads);
+    
+    const avgImbalance = imbalances.reduce((a, b) => a + b, 0) / imbalances.length;
+    const minPrice = Math.min(...midPrices);
+    const maxPrice = Math.max(...midPrices);
+    
+    // Volatilidad del spread
+    const spreadVariance = spreads.reduce((acc, spread) => acc + Math.pow(spread - avgSpread, 2), 0) / spreads.length;
+    const spreadStdDev = Math.sqrt(spreadVariance);
+
+    // Detectar períodos de alta/baja liquidez
+    const highLiquidityThreshold = avgSpread * 0.5; // Spread bajo = alta liquidez
+    const lowLiquidityThreshold = avgSpread * 1.5;  // Spread alto = baja liquidez
+    
+    const highLiquidityPeriods = data.filter(d => Number(d.spread) <= highLiquidityThreshold).length;
+    const lowLiquidityPeriods = data.filter(d => Number(d.spread) >= lowLiquidityThreshold).length;
+
+    return {
+      symbol,
+      period: `${durationMinutes} minutos`,
+      dataPoints: data.length,
+      timeRange: {
+        from: from.toISOString(),
+        to: to.toISOString()
+      },
+      spreadAnalysis: {
+        average: avgSpread,
+        min: minSpread,
+        max: maxSpread,
+        standardDeviation: spreadStdDev,
+        volatility: spreadStdDev / avgSpread // Coeficiente de variación
+      },
+      liquidityAnalysis: {
+        averageImbalance: avgImbalance,
+        highLiquidityPeriods: {
+          count: highLiquidityPeriods,
+          percentage: (highLiquidityPeriods / data.length) * 100
+        },
+        lowLiquidityPeriods: {
+          count: lowLiquidityPeriods,
+          percentage: (lowLiquidityPeriods / data.length) * 100
+        }
+      },
+      priceMovement: {
+        minPrice,
+        maxPrice,
+        priceRange: maxPrice - minPrice,
+        priceChangePercent: ((maxPrice - minPrice) / minPrice) * 100
+      },
+      lastSnapshot: data[data.length - 1]
+    };
   }
 } 
