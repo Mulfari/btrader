@@ -6,6 +6,7 @@ import { TradeAggregate } from './trade-aggregate.entity';
 import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
 import { FundingRate } from './funding-rate.entity';
+import { LongShortRatio } from './long-short-ratio.entity';
 
 interface BybitTrade {
   T: number;        // timestamp
@@ -67,6 +68,14 @@ interface FundingRateData {
   predictedFundingRate: number;
 }
 
+interface LongShortRatioData {
+  symbol: string;
+  longShortRatio: number;
+  longAccountRatio: number;
+  shortAccountRatio: number;
+  timestamp: Date;
+}
+
 @Injectable()
 export class BybitWebSocketService implements OnModuleInit {
   private readonly logger = new Logger(BybitWebSocketService.name);
@@ -75,12 +84,14 @@ export class BybitWebSocketService implements OnModuleInit {
   private orderbookData = new Map<string, OrderbookData>();
   private openInterestData = new Map<string, OpenInterestData>();
   private fundingRateData = new Map<string, FundingRateData>();
+  private longShortRatioData = new Map<string, LongShortRatioData>();
   private symbols = ['BTCUSDT']; // Empezamos solo con Bitcoin
   private isPaused = false; // 🟢 Control de pausa
   private aggregationTimer: NodeJS.Timeout | null = null; // 🟢 Timer de agregación
   private orderbookTimer: NodeJS.Timeout | null = null; // 🟢 Timer para snapshots del orderbook
   private openInterestTimer: NodeJS.Timeout | null = null; // 🟢 Timer para OI
   private fundingRateTimer: NodeJS.Timeout | null = null; // 🟢 Timer para Funding Rate
+  private longShortRatioTimer: NodeJS.Timeout | null = null; // 🟢 Timer para Long/Short Ratio
 
   constructor(
     @InjectRepository(TradeAggregate)
@@ -91,6 +102,8 @@ export class BybitWebSocketService implements OnModuleInit {
     private openInterestRepository: Repository<OpenInterest>,
     @InjectRepository(FundingRate)
     private fundingRateRepository: Repository<FundingRate>,
+    @InjectRepository(LongShortRatio)
+    private longShortRatioRepository: Repository<LongShortRatio>,
   ) {}
 
   onModuleInit() {
@@ -99,6 +112,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.startOrderbookTimer(); // 🟢 Iniciar timer del orderbook
     this.startOpenInterestTimer(); // 🟢 Iniciar timer de Open Interest
     this.startFundingRateTimer(); // 🟢 Iniciar timer de Funding Rate
+    this.startLongShortRatioTimer(); // 🟢 Iniciar timer de Long/Short Ratio
   }
 
   // 🟢 Métodos de control
@@ -120,6 +134,10 @@ export class BybitWebSocketService implements OnModuleInit {
       clearInterval(this.fundingRateTimer);
       this.fundingRateTimer = null;
     }
+    if (this.longShortRatioTimer) { // 🟢 Parar timer de Long/Short Ratio
+      clearInterval(this.longShortRatioTimer);
+      this.longShortRatioTimer = null;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close();
     }
@@ -133,6 +151,7 @@ export class BybitWebSocketService implements OnModuleInit {
     this.startOrderbookTimer(); // 🟢 Reiniciar timer del orderbook
     this.startOpenInterestTimer(); // 🟢 Reiniciar timer de Open Interest
     this.startFundingRateTimer(); // 🟢 Reiniciar timer de Funding Rate
+    this.startLongShortRatioTimer(); // 🟢 Reiniciar timer de Long/Short Ratio
     this.logger.log('▶️ Recolección de datos REANUDADA');
   }
 
@@ -188,6 +207,18 @@ export class BybitWebSocketService implements OnModuleInit {
             nextFundingTime: new Date(data.nextFundingTime).toISOString(),
             markPrice: data.markPrice,
             indexPrice: data.indexPrice,
+            timestamp: data.timestamp
+          }
+        ])
+      ),
+      // 🟢 Agregar datos de Long/Short Ratio al status
+      longShortRatioData: Object.fromEntries(
+        Array.from(this.longShortRatioData.entries()).map(([symbol, data]) => [
+          symbol,
+          {
+            longShortRatio: data.longShortRatio,
+            longAccountRatio: data.longAccountRatio,
+            shortAccountRatio: data.shortAccountRatio,
             timestamp: data.timestamp
           }
         ])
@@ -753,6 +784,230 @@ export class BybitWebSocketService implements OnModuleInit {
         bias: 0,
         isExtreme: false,
         reversalSignal: ''
+      };
+    }
+  }
+
+  private startLongShortRatioTimer() {
+    if (this.longShortRatioTimer) {
+      clearInterval(this.longShortRatioTimer);
+    }
+    
+    // 🟢 Consultar Long/Short Ratio vía REST API cada 5 minutos (300000 ms)
+    this.longShortRatioTimer = setInterval(() => {
+      if (this.isPaused) return;
+      
+      this.fetchLongShortRatioData();
+    }, 300000); // 5 minutos
+    
+    // Ejecutar inmediatamente al iniciar
+    if (!this.isPaused) {
+      this.fetchLongShortRatioData();
+    }
+  }
+
+  // 🟢 Método para consultar Long/Short Ratio vía REST API
+  private async fetchLongShortRatioData() {
+    if (this.isPaused) return;
+
+    for (const symbol of this.symbols) {
+      try {
+        // ✅ URL corregida según documentación oficial de Bybit
+        const url = `https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${symbol}&period=5min&limit=1`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.retCode === 0 && data.result && data.result.list && data.result.list.length > 0) {
+          const lsrData = data.result.list[0];
+          await this.processLongShortRatioData(symbol, lsrData);
+        } else {
+          this.logger.warn(`⚠️ No se encontraron datos de Long/Short Ratio para ${symbol}: ${data.retMsg || 'Unknown error'}`);
+        }
+      } catch (error) {
+        this.logger.error(`❌ Error obteniendo Long/Short Ratio para ${symbol}:`, error);
+      }
+    }
+  }
+
+  // 🟢 Procesar datos de Long/Short Ratio obtenidos de REST API
+  private async processLongShortRatioData(symbol: string, lsrData: any) {
+    const buyRatio = parseFloat(lsrData.buyRatio);
+    const sellRatio = parseFloat(lsrData.sellRatio);
+    const timestamp = parseInt(lsrData.timestamp);
+    
+    // Calcular Long/Short ratio = buyRatio / sellRatio
+    const longShortRatio = sellRatio > 0 ? buyRatio / sellRatio : 0;
+
+    // Actualizar datos de Long/Short Ratio
+    this.longShortRatioData.set(symbol, {
+      symbol,
+      longShortRatio,
+      longAccountRatio: buyRatio,
+      shortAccountRatio: sellRatio,
+      timestamp: new Date(timestamp)
+    });
+
+    this.logger.log(`📊 Long/Short Ratio ${symbol}: L/S=${longShortRatio.toFixed(4)}, Buy=${(buyRatio * 100).toFixed(2)}%, Sell=${(sellRatio * 100).toFixed(2)}%, Timestamp=${new Date(timestamp).toISOString()}`);
+
+    // Guardar en base de datos inmediatamente con análisis
+    await this.saveLongShortRatioSnapshot(symbol, longShortRatio, buyRatio, sellRatio, new Date(timestamp));
+  }
+
+  // 🟢 Guardar snapshot de Long/Short Ratio con análisis de FOMO/pánico
+  private async saveLongShortRatioSnapshot(
+    symbol: string, 
+    longShortRatio: number, 
+    buyRatio: number, 
+    sellRatio: number, 
+    timestamp: Date
+  ) {
+    try {
+      // 🎯 Calcular análisis de sentimiento y contrarian signals
+      const analysis = await this.analyzeLongShortSentiment(symbol, longShortRatio, buyRatio, sellRatio);
+
+      const longShortRatioEntity = new LongShortRatio();
+      longShortRatioEntity.symbol = symbol;
+      longShortRatioEntity.timestamp = timestamp;
+      longShortRatioEntity.long_short_ratio = longShortRatio;
+      longShortRatioEntity.long_account_ratio = buyRatio;
+      longShortRatioEntity.short_account_ratio = sellRatio;
+      
+      // Sin datos de top traders de Bybit, establecemos como null
+      longShortRatioEntity.top_trader_long_ratio = null;
+      longShortRatioEntity.top_trader_short_ratio = null;
+      
+      // Análisis de sentimiento y FOMO/pánico
+      longShortRatioEntity.market_sentiment = analysis.sentiment;
+      longShortRatioEntity.sentiment_score = analysis.sentimentScore;
+      longShortRatioEntity.is_extreme_long = analysis.isExtremeLong;
+      longShortRatioEntity.is_extreme_short = analysis.isExtremeShort;
+      longShortRatioEntity.contrarian_signal = analysis.contrarianSignal || null;
+      longShortRatioEntity.fomo_panic_level = analysis.fomoPanicLevel;
+      longShortRatioEntity.crowd_behavior = analysis.crowdBehavior;
+      
+      // Promedios
+      longShortRatioEntity.ratio_1h_avg = analysis.avg1h;
+      longShortRatioEntity.ratio_4h_avg = analysis.avg4h;
+      longShortRatioEntity.ratio_24h_avg = analysis.avg24h;
+
+      await this.longShortRatioRepository.save(longShortRatioEntity);
+      this.logger.debug(`💾 Long/Short Ratio guardado: ${symbol} - Sentiment=${analysis.sentiment}, FOMO/Panic=${analysis.fomoPanicLevel.toFixed(2)}`);
+    } catch (error) {
+      this.logger.error('❌ Error guardando Long/Short Ratio:', error);
+    }
+  }
+
+  // 🎯 Análisis avanzado de sentimiento y señales contrarias
+  private async analyzeLongShortSentiment(symbol: string, currentLSRatio: number, buyRatio: number, sellRatio: number) {
+    try {
+      // Obtener datos históricos para cálculos
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const [recent1h, recent4h, recent24h] = await Promise.all([
+        this.longShortRatioRepository
+          .createQueryBuilder('lsr')
+          .where('lsr.symbol = :symbol', { symbol })
+          .andWhere('lsr.timestamp >= :oneHourAgo', { oneHourAgo })
+          .getMany(),
+        
+        this.longShortRatioRepository
+          .createQueryBuilder('lsr')
+          .where('lsr.symbol = :symbol', { symbol })
+          .andWhere('lsr.timestamp >= :fourHoursAgo', { fourHoursAgo })
+          .getMany(),
+          
+        this.longShortRatioRepository
+          .createQueryBuilder('lsr')
+          .where('lsr.symbol = :symbol', { symbol })
+          .andWhere('lsr.timestamp >= :twentyFourHoursAgo', { twentyFourHoursAgo })
+          .getMany()
+      ]);
+
+      // Calcular promedios
+      const avg1h = recent1h.length > 0 
+        ? recent1h.reduce((sum, r) => sum + parseFloat(r.long_short_ratio.toString()), 0) / recent1h.length
+        : currentLSRatio;
+
+      const avg4h = recent4h.length > 0 
+        ? recent4h.reduce((sum, r) => sum + parseFloat(r.long_short_ratio.toString()), 0) / recent4h.length
+        : currentLSRatio;
+
+      const avg24h = recent24h.length > 0 
+        ? recent24h.reduce((sum, r) => sum + parseFloat(r.long_short_ratio.toString()), 0) / recent24h.length
+        : currentLSRatio;
+
+      // 🎯 Determinar sentimiento del mercado
+      let sentiment = 'neutral';
+      let sentimentScore = 0;
+      
+      if (buyRatio > 0.70) sentiment = 'extreme_greed';      // >70% longs = codicia extrema
+      else if (buyRatio > 0.60) sentiment = 'greed';        // >60% longs = codicia
+      else if (buyRatio < 0.30) sentiment = 'extreme_fear'; // <30% longs = miedo extremo
+      else if (buyRatio < 0.40) sentiment = 'fear';         // <40% longs = miedo
+
+      // Score de sentimiento (-100 a 100)
+      sentimentScore = (buyRatio - 0.5) * 200; // 0.5 = neutral, 0.7 = +40, 0.3 = -40
+
+      // 🎯 Detectar niveles extremos
+      const isExtremeLong = buyRatio > 0.75;   // >75% longs
+      const isExtremeShort = buyRatio < 0.25;  // <25% longs
+
+      // 🎯 Señales contrarias (when the crowd is wrong)
+      let contrarianSignal: string | null = null;
+      if (buyRatio > 0.80 && currentLSRatio > avg24h * 1.2) {
+        contrarianSignal = 'bearish_contrarian'; // Demasiados longs = señal bajista
+      } else if (buyRatio < 0.20 && currentLSRatio < avg24h * 0.8) {
+        contrarianSignal = 'bullish_contrarian'; // Demasiados shorts = señal alcista
+      } else if (Math.abs(currentLSRatio - avg24h) > avg24h * 0.3) {
+        contrarianSignal = 'divergence'; // Divergencia significativa
+      }
+
+      // 🎯 Nivel de FOMO/Pánico
+      let fomoPanicLevel = 0;
+      if (buyRatio > 0.60) {
+        fomoPanicLevel = (buyRatio - 0.60) * 250; // FOMO: 0 a 100
+      } else if (buyRatio < 0.40) {
+        fomoPanicLevel = (buyRatio - 0.40) * 250; // Pánico: 0 a -100
+      }
+
+      // 🎯 Comportamiento de la multitud
+      let crowdBehavior = 'balanced';
+      if (buyRatio > 0.65 && currentLSRatio > avg1h) crowdBehavior = 'fomo_buying';
+      else if (buyRatio < 0.35 && currentLSRatio < avg1h) crowdBehavior = 'panic_selling';
+      else if (Math.abs(currentLSRatio - avg1h) > avg1h * 0.2) crowdBehavior = 'uncertainty';
+
+      return {
+        avg1h,
+        avg4h,
+        avg24h,
+        sentiment,
+        sentimentScore,
+        isExtremeLong,
+        isExtremeShort,
+        contrarianSignal,
+        fomoPanicLevel,
+        crowdBehavior
+      };
+    } catch (error) {
+      this.logger.error('❌ Error en análisis de Long/Short Ratio:', error);
+      return {
+        avg1h: currentLSRatio,
+        avg4h: currentLSRatio,
+        avg24h: currentLSRatio,
+        sentiment: 'neutral',
+        sentimentScore: 0,
+        isExtremeLong: false,
+        isExtremeShort: false,
+        contrarianSignal: null,
+        fomoPanicLevel: 0,
+        crowdBehavior: 'balanced'
       };
     }
   }

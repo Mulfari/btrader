@@ -3,10 +3,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TradeAggregate } from './trade-aggregate.entity';
 import { OrderbookSnapshot } from './orderbook-snapshot.entity';
 import { OpenInterest } from './open-interest.entity';
+import { FundingRate } from './funding-rate.entity';
+import { LongShortRatio } from './long-short-ratio.entity';
 import { TradesController } from './trades.controller';
 import { TradesService } from './trades.service';
 import { BybitWebSocketService } from './bybit-websocket.service';
-import { FundingRate } from './funding-rate.entity';
 
 @Module({
   imports: [
@@ -14,7 +15,8 @@ import { FundingRate } from './funding-rate.entity';
       TradeAggregate, 
       OrderbookSnapshot, 
       OpenInterest,
-      FundingRate
+      FundingRate,
+      LongShortRatio
     ])
   ],
   controllers: [TradesController],
