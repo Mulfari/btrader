@@ -102,7 +102,8 @@ export class MarketService {
   private readonly mainSymbols = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 
     'DOGEUSDT', 'LINKUSDT', 'UNIUSDT', 'SHIBUSDT', 'LTCUSDT', 
-    'BCHUSDT', 'ATOMUSDT', 'NEARUSDT', 'AVAXUSDT', 'MATICUSDT', 'DOTUSDT'
+    'BCHUSDT', 'ATOMUSDT', 'NEARUSDT', 'AVAXUSDT', 'MATICUSDT', 'DOTUSDT',
+    'ONDOUSDT'
   ];
 
   async getSpotTickers(): Promise<SpotMarketTicker[]> {
