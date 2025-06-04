@@ -232,7 +232,7 @@ export class SubaccountsController {
   @UseGuards(AuthGuard)
   async getSubaccountBalance(@Request() req: any, @Body() body: {
     subaccountId: string;
-    accountType?: 'SPOT' | 'CONTRACT';
+    accountType?: 'UNIFIED' | 'SPOT' | 'CONTRACT';
   }) {
     try {
       const userId = req.user.id;
@@ -242,7 +242,7 @@ export class SubaccountsController {
         throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
       }
 
-      const { subaccountId, accountType = 'SPOT' } = body;
+      const { subaccountId, accountType = 'UNIFIED' } = body;
 
       if (!subaccountId) {
         throw new HttpException('subaccountId is required', HttpStatus.BAD_REQUEST);

@@ -660,7 +660,7 @@ export class SubaccountsService {
     secret_key: string;
     is_demo: boolean;
     name?: string;
-  }, accountType: 'SPOT' | 'CONTRACT' = 'SPOT'): Promise<any> {
+  }, accountType: 'UNIFIED' | 'SPOT' | 'CONTRACT' = 'UNIFIED'): Promise<any> {
     this.logger.log(`Getting account balance for subaccount: ${subaccount.name || subaccount.id}`, {
       accountType
     });
