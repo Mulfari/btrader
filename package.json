@@ -15,6 +15,7 @@
     "lint": "eslint \"{src,apps,libs}/**/*.ts\" --fix"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
@@ -37,7 +38,8 @@
     "rxjs": "^7.8.1",
     "stripe": "^18.0.0",
     "typeorm": "^0.3.24",
-    "ws": "^8.18.2"
+    "ws": "^8.18.2",
+    "zod": "^3.25.51"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
