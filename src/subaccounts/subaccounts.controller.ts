@@ -287,4 +287,82 @@ export class SubaccountsController {
       );
     }
   }
+
+  @Post('test-credentials')
+  @UseGuards(AuthGuard)
+  async testSubaccountCredentials(@Request() req: any, @Body() body: {
+    subaccountId: string;
+  }) {
+    try {
+      const userId = req.user.id;
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+
+      const { subaccountId } = body;
+
+      if (!subaccountId) {
+        throw new HttpException('subaccountId is required', HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.log(`Testing credentials for subaccount ${subaccountId}`);
+
+      // Verificar que la subcuenta pertenece al usuario
+      const { data: userSubaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
+
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new HttpException(`Failed to fetch subaccounts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      const subaccount = userSubaccounts.find(sub => sub.id === subaccountId);
+
+      if (!subaccount) {
+        throw new HttpException('Subaccount not found or access denied', HttpStatus.FORBIDDEN);
+      }
+
+      // Verificar credenciales básicas
+      if (!subaccount.api_key || !subaccount.secret_key) {
+        return {
+          subaccountId: subaccount.id,
+          subaccountName: subaccount.name,
+          isDemo: subaccount.is_demo,
+          status: 'error',
+          error: 'Missing API credentials',
+          details: {
+            hasApiKey: !!subaccount.api_key,
+            hasSecretKey: !!subaccount.secret_key,
+            apiKeyLength: subaccount.api_key?.length || 0,
+            secretKeyLength: subaccount.secret_key?.length || 0
+          }
+        };
+      }
+
+      // Probar conectividad con Bybit
+      const diagnostics = await this.subaccountsService.testCredentials(subaccount);
+
+      return {
+        subaccountId: subaccount.id,
+        subaccountName: subaccount.name,
+        isDemo: subaccount.is_demo,
+        status: 'success',
+        diagnostics
+      };
+
+    } catch (error: any) {
+      this.logger.error('Error in testSubaccountCredentials:', error);
+      
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
 } 

@@ -711,4 +711,129 @@ export class SubaccountsService {
       throw error;
     }
   }
+
+  async testCredentials(subaccount: {
+    id: string;
+    api_key: string;
+    secret_key: string;
+    is_demo: boolean;
+    name?: string;
+  }): Promise<any> {
+    this.logger.log(`Testing credentials for subaccount: ${subaccount.name || subaccount.id}`);
+    
+    try {
+      // Verificaciones básicas
+      if (!subaccount.api_key || !subaccount.secret_key) {
+        return {
+          status: 'error',
+          error: 'Missing API credentials',
+          details: {
+            hasApiKey: !!subaccount.api_key,
+            hasSecretKey: !!subaccount.secret_key
+          }
+        };
+      }
+
+      // Probar conectividad básica con endpoint simple
+      const timestamp = Date.now();
+      const params = '?';
+      const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, params);
+
+      const baseUrl = subaccount.is_demo 
+        ? 'https://api-testnet.bybit.com' 
+        : 'https://api.bybit.com';
+
+      this.logger.debug(`Testing API connection for ${subaccount.name}:`, {
+        url: `${baseUrl}/v5/user/query-api`,
+        isDemo: subaccount.is_demo,
+        hasApiKey: !!subaccount.api_key,
+        apiKeyLength: subaccount.api_key?.length
+      });
+
+      // Probar acceso a la API con endpoint de información de API
+      const response = await axios.get(`${baseUrl}/v5/user/query-api`, {
+        headers: {
+          'X-BAPI-API-KEY': subaccount.api_key,
+          'X-BAPI-SIGN': signature,
+          'X-BAPI-SIGN-TYPE': '2',
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': '5000',
+        },
+        timeout: 10000 // 10 segundos de timeout
+      });
+
+      if (response.data.retCode !== 0) {
+        return {
+          status: 'error',
+          error: `Bybit API error: ${response.data.retMsg}`,
+          details: {
+            retCode: response.data.retCode,
+            retMsg: response.data.retMsg,
+            baseUrl,
+            isDemo: subaccount.is_demo
+          }
+        };
+      }
+
+      const apiInfo = response.data.result;
+      
+      // Verificar permisos específicos
+      const hasWalletPermission = apiInfo.permissions?.Wallet?.includes('AccountTransfer') || 
+                                  apiInfo.permissions?.Wallet?.includes('SubMemberTransfer');
+      const hasSpotPermission = apiInfo.permissions?.Spot?.includes('SpotTrade');
+      const hasContractPermission = apiInfo.permissions?.ContractTrade?.includes('Order');
+
+      return {
+        status: 'success',
+        apiInfo: {
+          readOnly: apiInfo.readOnly,
+          permissions: apiInfo.permissions,
+          uta: apiInfo.uta, // Unified Trading Account status
+          affiliateID: apiInfo.affiliateID,
+          expiredAt: apiInfo.expiredAt
+        },
+        permissionCheck: {
+          hasWalletPermission,
+          hasSpotPermission,
+          hasContractPermission,
+          canReadBalance: hasWalletPermission || hasSpotPermission || hasContractPermission
+        },
+        connectionTest: {
+          baseUrl,
+          isDemo: subaccount.is_demo,
+          responseTime: Date.now() - timestamp
+        }
+      };
+
+    } catch (error: any) {
+      this.logger.error(`Error testing credentials for ${subaccount.name}:`, {
+        error: error.message,
+        isAxiosError: axios.isAxiosError(error),
+        status: error.response?.status,
+        data: error.response?.data
+      });
+
+      if (axios.isAxiosError(error)) {
+        return {
+          status: 'error',
+          error: `Connection error: ${error.message}`,
+          details: {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            isDemo: subaccount.is_demo,
+            timeout: error.code === 'ECONNABORTED'
+          }
+        };
+      }
+
+      return {
+        status: 'error',
+        error: error.message || 'Unknown error occurred',
+        details: {
+          isDemo: subaccount.is_demo
+        }
+      };
+    }
+  }
 } 
