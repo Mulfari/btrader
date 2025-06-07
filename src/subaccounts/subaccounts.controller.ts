@@ -365,4 +365,128 @@ export class SubaccountsController {
       );
     }
   }
+
+  @Post('request-demo-funds')
+  @UseGuards(AuthGuard)
+  async requestDemoFunds(@Request() req: any, @Body() body: {
+    subaccountId: string;
+    coins?: Array<{coin: string, amount: string}>;
+  }) {
+    try {
+      const userId = req.user.id;
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+
+      const { subaccountId, coins } = body;
+
+      if (!subaccountId) {
+        throw new HttpException('subaccountId is required', HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.log(`Requesting demo funds for subaccount ${subaccountId}`);
+
+      // Verificar que la subcuenta pertenece al usuario
+      const { data: userSubaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
+
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new HttpException(`Failed to fetch subaccounts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      const subaccount = userSubaccounts.find(sub => sub.id === subaccountId);
+
+      if (!subaccount) {
+        throw new HttpException('Subaccount not found or access denied', HttpStatus.FORBIDDEN);
+      }
+
+      if (!subaccount.is_demo) {
+        throw new HttpException('Demo funds can only be requested for demo accounts', HttpStatus.BAD_REQUEST);
+      }
+
+      // Solicitar fondos demo
+      const result = await this.subaccountsService.requestDemoFunds(subaccount, coins);
+
+      return {
+        subaccountId: subaccount.id,
+        subaccountName: subaccount.name,
+        isDemo: subaccount.is_demo,
+        ...result
+      };
+
+    } catch (error: any) {
+      this.logger.error('Error in requestDemoFunds:', error);
+      
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  @Post('demo-account-info')
+  @UseGuards(AuthGuard)
+  async getDemoAccountInfo(@Request() req: any, @Body() body: {
+    subaccountId: string;
+  }) {
+    try {
+      const userId = req.user.id;
+      
+      if (!userId) {
+        this.logger.error('User ID not found in request');
+        throw new HttpException('User ID not found', HttpStatus.BAD_REQUEST);
+      }
+
+      const { subaccountId } = body;
+
+      if (!subaccountId) {
+        throw new HttpException('subaccountId is required', HttpStatus.BAD_REQUEST);
+      }
+
+      this.logger.log(`Getting demo account info for subaccount ${subaccountId}`);
+
+      // Verificar que la subcuenta pertenece al usuario
+      const { data: userSubaccounts, error } = await this.supabase
+        .rpc('get_user_subaccounts_service_role', { p_user_id: userId });
+
+      if (error) {
+        this.logger.error('Error fetching user subaccounts:', error);
+        throw new HttpException(`Failed to fetch subaccounts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      const subaccount = userSubaccounts.find(sub => sub.id === subaccountId);
+
+      if (!subaccount) {
+        throw new HttpException('Subaccount not found or access denied', HttpStatus.FORBIDDEN);
+      }
+
+      // Obtener información de la cuenta demo
+      const demoInfo = await this.subaccountsService.getDemoAccountInfo(subaccount);
+
+      return {
+        subaccountId: subaccount.id,
+        subaccountName: subaccount.name,
+        ...demoInfo
+      };
+
+    } catch (error: any) {
+      this.logger.error('Error in getDemoAccountInfo:', error);
+      
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      
+      throw new HttpException(
+        error.message || 'Internal server error',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
 } 
