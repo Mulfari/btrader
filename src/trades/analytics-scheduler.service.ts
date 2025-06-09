@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron, CronExpression, SchedulerRegistry } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { AdvancedAnalyticsService } from './advanced-analytics.service';
@@ -17,8 +17,12 @@ export class AnalyticsSchedulerService {
   // Timeframes para Volume Profile
   private readonly TIMEFRAMES = ['5m', '15m', '1h', '4h'] as const;
 
+  // 🟢 Control de pausa
+  private isPaused = false;
+
   constructor(
     private readonly advancedAnalyticsService: AdvancedAnalyticsService,
+    private readonly schedulerRegistry: SchedulerRegistry,
     @InjectRepository(TradeAggregate)
     private tradeRepository: Repository<TradeAggregate>,
     @InjectRepository(VolumeProfile)
@@ -26,6 +30,52 @@ export class AnalyticsSchedulerService {
     @InjectRepository(MarketSentiment)
     private marketSentimentRepository: Repository<MarketSentiment>,
   ) {}
+
+  // 🟢 Métodos de control
+  pause() {
+    this.isPaused = true;
+    
+    // Pausar la tarea cron principal
+    try {
+      const job = this.schedulerRegistry.getCronJob('generateAnalytics');
+      job.stop();
+      this.logger.warn('⏸️ Análisis automático PAUSADO');
+    } catch (error) {
+      this.logger.warn('⚠️ No se pudo pausar la tarea cron:', error.message);
+    }
+  }
+
+  resume() {
+    this.isPaused = false;
+    
+    // Reanudar la tarea cron principal
+    try {
+      const job = this.schedulerRegistry.getCronJob('generateAnalytics');
+      job.start();
+      this.logger.log('▶️ Análisis automático REANUDADO');
+    } catch (error) {
+      this.logger.warn('⚠️ No se pudo reanudar la tarea cron:', error.message);
+    }
+  }
+
+  getSchedulerStatus() {
+    return {
+      isPaused: this.isPaused,
+      isJobRunning: this.isJobRunning(),
+      symbols: this.SYMBOLS,
+      timeframes: this.TIMEFRAMES,
+      nextRun: this.isPaused ? null : this.getNextRunTime()
+    };
+  }
+
+  private isJobRunning(): boolean {
+    try {
+      const job = this.schedulerRegistry.getCronJob('generateAnalytics');
+      return !this.isPaused; // Si no está pausado, el job está activo
+    } catch (error) {
+      return false;
+    }
+  }
 
   /**
    * 🎯 Tarea principal: Ejecutar cada 5 minutos
@@ -35,6 +85,12 @@ export class AnalyticsSchedulerService {
     timeZone: 'UTC',
   })
   async generateAnalyticsEvery5Minutes() {
+    // 🟢 No ejecutar si está pausado
+    if (this.isPaused) {
+      this.logger.debug('⏸️ Análisis pausado - saltando ejecución');
+      return;
+    }
+
     this.logger.log('🚀 Iniciando generación automática de análisis...');
     
     const startTime = Date.now();
@@ -162,6 +218,12 @@ export class AnalyticsSchedulerService {
     timeZone: 'UTC',
   })
   async weeklyDataCleanup() {
+    // 🟢 No ejecutar si está pausado
+    if (this.isPaused) {
+      this.logger.debug('⏸️ Limpieza pausada - saltando ejecución');
+      return;
+    }
+
     this.logger.log('🧹 Iniciando limpieza semanal de datos antiguos...');
     
     try {
@@ -213,8 +275,10 @@ export class AnalyticsSchedulerService {
     const stats = {
       symbols: this.SYMBOLS,
       timeframes: this.TIMEFRAMES,
-      nextRun: this.getNextRunTime(),
-      status: 'active'
+      nextRun: this.isPaused ? null : this.getNextRunTime(),
+      status: this.isPaused ? 'paused' : 'active',
+      isPaused: this.isPaused,
+      isJobRunning: this.isJobRunning()
     };
 
     // Contar registros por símbolo

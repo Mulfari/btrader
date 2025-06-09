@@ -719,39 +719,39 @@ export class SubaccountsService {
     is_demo: boolean;
     name?: string;
   }): Promise<any> {
+    this.logger.log(`Testing credentials for subaccount: ${subaccount.name || subaccount.id}`);
+    
     try {
-      // Validar que tenemos las claves necesarias
+      // Verificaciones básicas
       if (!subaccount.api_key || !subaccount.secret_key) {
         return {
           status: 'error',
           error: 'Missing API credentials',
-          recommendations: [
-            'Please provide both API key and secret key',
-            subaccount.is_demo 
-              ? 'Create testnet API keys at: https://testnet.bybit.com/app/user/api-management'
-              : 'Create mainnet API keys at: https://www.bybit.com/app/user/api-management'
-          ]
+          details: {
+            hasApiKey: !!subaccount.api_key,
+            hasSecretKey: !!subaccount.secret_key
+          }
         };
       }
 
+      // Probar conectividad básica con endpoint simple
       const timestamp = Date.now();
-      const params = '?category=spot';
+      const params = '?';
       const signature = this.generateSignature(subaccount.api_key, subaccount.secret_key, timestamp, params);
 
-      // Use appropriate URL based on account type
       const baseUrl = subaccount.is_demo 
         ? 'https://api-testnet.bybit.com' 
         : 'https://api.bybit.com';
 
-      this.logger.log(`Testing credentials for ${subaccount.name || subaccount.id}:`, {
+      this.logger.debug(`Testing API connection for ${subaccount.name}:`, {
+        url: `${baseUrl}/v5/user/query-api`,
         isDemo: subaccount.is_demo,
-        baseUrl,
         hasApiKey: !!subaccount.api_key,
-        hasSecretKey: !!subaccount.secret_key
+        apiKeyLength: subaccount.api_key?.length
       });
 
-      // Test with a simple API call (get wallet balance)
-      const response = await axios.get(`${baseUrl}/v5/account/wallet-balance${params}`, {
+      // Probar acceso a la API con endpoint de información de API
+      const response = await axios.get(`${baseUrl}/v5/user/query-api`, {
         headers: {
           'X-BAPI-API-KEY': subaccount.api_key,
           'X-BAPI-SIGN': signature,
@@ -759,277 +759,80 @@ export class SubaccountsService {
           'X-BAPI-TIMESTAMP': timestamp.toString(),
           'X-BAPI-RECV-WINDOW': '5000',
         },
-        timeout: 10000 // 10 second timeout
+        timeout: 10000 // 10 segundos de timeout
       });
 
-      const isSuccess = response.data.retCode === 0;
-      
-      if (isSuccess) {
-        this.logger.log(`Credentials test successful for ${subaccount.name}`);
-        
-        return {
-          status: 'success',
-          environment: subaccount.is_demo ? 'testnet' : 'mainnet',
-          apiKeyValid: true,
-          canTrade: true,
-          message: subaccount.is_demo 
-            ? 'Demo account credentials are valid. Ready for paper trading!'
-            : 'Live account credentials are valid. Ready for real trading!',
-          recommendations: subaccount.is_demo ? [
-            'Use the "Request Demo Funds" feature to get test USDT',
-            'All trades will be simulated with fake money',
-            'Perfect for testing strategies without risk'
-          ] : [
-            'Ensure you have sufficient balance for trading',
-            'Be careful - this is real money trading',
-            'Start with small amounts to test'
-          ]
-        };
-      } else {
-        this.logger.error(`Credentials test failed for ${subaccount.name}:`, {
-          retCode: response.data.retCode,
-          retMsg: response.data.retMsg
-        });
-
+      if (response.data.retCode !== 0) {
         return {
           status: 'error',
-          environment: subaccount.is_demo ? 'testnet' : 'mainnet',
-          error: response.data.retMsg,
-          recommendations: this.getCredentialErrorRecommendations(response.data.retCode, subaccount.is_demo)
+          error: `Bybit API error: ${response.data.retMsg}`,
+          details: {
+            retCode: response.data.retCode,
+            retMsg: response.data.retMsg,
+            baseUrl,
+            isDemo: subaccount.is_demo
+          }
         };
       }
 
+      const apiInfo = response.data.result;
+      
+      // Verificar permisos específicos
+      const hasWalletPermission = apiInfo.permissions?.Wallet?.includes('AccountTransfer') || 
+                                  apiInfo.permissions?.Wallet?.includes('SubMemberTransfer');
+      const hasSpotPermission = apiInfo.permissions?.Spot?.includes('SpotTrade');
+      const hasContractPermission = apiInfo.permissions?.ContractTrade?.includes('Order');
+
+      return {
+        status: 'success',
+        apiInfo: {
+          readOnly: apiInfo.readOnly,
+          permissions: apiInfo.permissions,
+          uta: apiInfo.uta, // Unified Trading Account status
+          affiliateID: apiInfo.affiliateID,
+          expiredAt: apiInfo.expiredAt
+        },
+        permissionCheck: {
+          hasWalletPermission,
+          hasSpotPermission,
+          hasContractPermission,
+          canReadBalance: hasWalletPermission || hasSpotPermission || hasContractPermission
+        },
+        connectionTest: {
+          baseUrl,
+          isDemo: subaccount.is_demo,
+          responseTime: Date.now() - timestamp
+        }
+      };
+
     } catch (error: any) {
-      this.logger.error(`Credentials test error for ${subaccount.name}:`, {
+      this.logger.error(`Error testing credentials for ${subaccount.name}:`, {
         error: error.message,
+        isAxiosError: axios.isAxiosError(error),
         status: error.response?.status,
         data: error.response?.data
       });
 
-      let errorMessage = 'Connection failed';
-      let recommendations: string[] = [];
-
       if (axios.isAxiosError(error)) {
-        if (error.response?.status === 401) {
-          errorMessage = 'Invalid API credentials';
-          recommendations = this.getCredentialErrorRecommendations(10003, subaccount.is_demo);
-        } else if (error.response?.status === 403) {
-          errorMessage = 'API key lacks required permissions';
-          recommendations = [
-            'Ensure your API key has trading permissions enabled',
-            subaccount.is_demo 
-              ? 'Check testnet API key permissions at: https://testnet.bybit.com/app/user/api-management'
-              : 'Check mainnet API key permissions at: https://www.bybit.com/app/user/api-management'
-          ];
-        } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-          errorMessage = 'Cannot connect to Bybit API';
-          recommendations = [
-            'Check your internet connection',
-            'Verify firewall settings',
-            'Try again in a few moments'
-          ];
-        }
+        return {
+          status: 'error',
+          error: `Connection error: ${error.message}`,
+          details: {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            isDemo: subaccount.is_demo,
+            timeout: error.code === 'ECONNABORTED'
+          }
+        };
       }
 
       return {
         status: 'error',
-        environment: subaccount.is_demo ? 'testnet' : 'mainnet',
-        error: errorMessage,
-        recommendations
-      };
-    }
-  }
-
-  private getCredentialErrorRecommendations(retCode: number, isDemo: boolean): string[] {
-    const baseRecommendations = isDemo ? [
-      'Ensure you are using testnet.bybit.com API keys',
-      'Create new testnet API keys at: https://testnet.bybit.com/app/user/api-management',
-      'Testnet and mainnet API keys are different and cannot be mixed'
-    ] : [
-      'Ensure you are using www.bybit.com API keys',  
-      'Create new mainnet API keys at: https://www.bybit.com/app/user/api-management',
-      'Verify your API key has not expired'
-    ];
-
-    switch (retCode) {
-      case 10003:
-        return [
-          'Invalid API key format or key not found',
-          ...baseRecommendations
-        ];
-      case 10004:
-        return [
-          'Invalid signature - check your secret key',
-          'Ensure there are no extra spaces in your credentials',
-          ...baseRecommendations
-        ];
-      case 10005:
-        return [
-          'Invalid timestamp - check system clock',
-          'Ensure your server time is synchronized',
-          ...baseRecommendations
-        ];
-      default:
-        return baseRecommendations;
-    }
-  }
-
-  /**
-   * Request demo funds for testnet accounts
-   * This method allows demo accounts to get free USDT for testing
-   */
-  async requestDemoFunds(subaccount: {
-    id: string;
-    api_key: string;
-    secret_key: string;
-    is_demo: boolean;
-    name?: string;
-  }, coins: Array<{coin: string, amount: string}> = [
-    {coin: 'USDT', amount: '10000'},
-    {coin: 'BTC', amount: '1'},
-    {coin: 'ETH', amount: '10'}
-  ]): Promise<{success: boolean, message?: string, error?: string}> {
-    
-    if (!subaccount.is_demo) {
-      return {
-        success: false,
-        error: 'Demo funds can only be requested for demo accounts'
-      };
-    }
-
-    try {
-      this.logger.log(`Requesting demo funds for ${subaccount.name || subaccount.id}`, {
-        coins,
-        subaccountId: subaccount.id
-      });
-
-      const timestamp = Date.now();
-      const requestBody = {
-        adjustType: 0, // 0 = add funds, 1 = reduce funds
-        utaDemoApplyMoney: coins.map(coin => ({
-          coin: coin.coin,
-          amountStr: coin.amount
-        }))
-      };
-
-      const signature = this.generateSignatureForPost(subaccount.api_key, subaccount.secret_key, timestamp, requestBody);
-
-      const response = await axios.post('https://api-testnet.bybit.com/v5/account/demo-apply-money', requestBody, {
-        headers: {
-          'X-BAPI-API-KEY': subaccount.api_key,
-          'X-BAPI-SIGN': signature,
-          'X-BAPI-SIGN-TYPE': '2',
-          'X-BAPI-TIMESTAMP': timestamp.toString(),
-          'X-BAPI-RECV-WINDOW': '5000',
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (response.data.retCode === 0) {
-        this.logger.log(`Demo funds requested successfully for ${subaccount.name}`, {
-          coins,
-          response: response.data.result
-        });
-
-        const coinList = coins.map(c => `${c.amount} ${c.coin}`).join(', ');
-        return {
-          success: true,
-          message: `Successfully added demo funds: ${coinList}. Funds should appear in your account within a few minutes.`
-        };
-      } else {
-        this.logger.error(`Demo funds request failed for ${subaccount.name}:`, {
-          retCode: response.data.retCode,
-          retMsg: response.data.retMsg
-        });
-
-        return {
-          success: false,
-          error: `Bybit API error: ${response.data.retMsg}`
-        };
-      }
-
-    } catch (error: any) {
-      this.logger.error(`Error requesting demo funds for ${subaccount.name}:`, {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-
-      if (axios.isAxiosError(error)) {
-        if (error.response?.status === 401) {
-          return {
-            success: false,
-            error: 'Invalid testnet API credentials. Please check your demo account API keys.'
-          };
-        } else if (error.response?.status === 429) {
-          return {
-            success: false,
-            error: 'Rate limit exceeded. Please try again in a few minutes.'
-          };
+        error: error.message || 'Unknown error occurred',
+        details: {
+          isDemo: subaccount.is_demo
         }
-      }
-
-      return {
-        success: false,
-        error: `Failed to request demo funds: ${error.message}`
-      };
-    }
-  }
-
-  /**
-   * Get demo account information and status
-   */
-  async getDemoAccountInfo(subaccount: {
-    id: string;
-    api_key: string;
-    secret_key: string;
-    is_demo: boolean;
-    name?: string;
-  }): Promise<any> {
-    if (!subaccount.is_demo) {
-      return {
-        error: 'This method only works for demo accounts',
-        isDemo: false
-      };
-    }
-
-    try {
-      // Get account info and balance
-      const balance = await this.getAccountBalance(subaccount, 'UNIFIED');
-      const credentials = await this.testCredentials(subaccount);
-
-      return {
-        isDemo: true,
-        environment: 'testnet',
-        accountInfo: {
-          subaccountId: subaccount.id,
-          name: subaccount.name,
-          apiKeyValid: credentials.status === 'success',
-          balance: balance
-        },
-        features: {
-          canRequestFunds: true,
-          canTrade: credentials.status === 'success',
-          simulatedTrading: true
-        },
-        urls: {
-          webInterface: 'https://testnet.bybit.com',
-          apiDocumentation: 'https://bybit-exchange.github.io/docs/v5/demo',
-          createApiKeys: 'https://testnet.bybit.com/app/user/api-management'
-        },
-        limitations: [
-          'Orders expire after 7 days',
-          'Default rate limits apply (not upgradable)',
-          'Some advanced features may not be available',
-          'Data resets periodically'
-        ]
-      };
-
-    } catch (error: any) {
-      this.logger.error(`Error getting demo account info for ${subaccount.name}:`, error);
-      return {
-        error: `Failed to get demo account info: ${error.message}`,
-        isDemo: true
       };
     }
   }

@@ -16,8 +16,52 @@ export class AnalyticsSchedulerController {
     const stats = await this.schedulerService.getSchedulerStats();
     
     return {
-      message: 'Scheduler funcionando correctamente',
+      message: stats.isPaused ? 'Scheduler pausado' : 'Scheduler funcionando correctamente',
       ...stats
+    };
+  }
+
+  /**
+   * ⏸️ Pausar el scheduler automático
+   * POST /analytics/scheduler/pause
+   */
+  @Post('pause')
+  async pauseScheduler() {
+    this.schedulerService.pause();
+    return {
+      success: true,
+      message: '⏸️ Scheduler pausado exitosamente - No se ejecutarán análisis automáticos',
+      status: 'paused',
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * ▶️ Reanudar el scheduler automático
+   * POST /analytics/scheduler/resume
+   */
+  @Post('resume')
+  async resumeScheduler() {
+    this.schedulerService.resume();
+    return {
+      success: true,
+      message: '▶️ Scheduler reanudado exitosamente - Los análisis automáticos se ejecutarán cada 5 minutos',
+      status: 'active',
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * 🔍 Obtener estado del scheduler
+   * GET /analytics/scheduler/status
+   */
+  @Get('status')
+  async getSchedulerStatus() {
+    const status = this.schedulerService.getSchedulerStatus();
+    return {
+      ...status,
+      message: status.isPaused ? 'Scheduler pausado' : 'Scheduler activo',
+      timestamp: new Date().toISOString()
     };
   }
 
@@ -89,7 +133,7 @@ export class AnalyticsSchedulerController {
     return {
       currentTime: new Date(),
       nextRun: stats.nextRun,
-      timeUntilNextRun: this.formatTimeUntil(stats.nextRun),
+      timeUntilNextRun: stats.nextRun ? this.formatTimeUntil(stats.nextRun) : 'Pausado',
       cronExpression: '0 */5 * * * *', // Cada 5 minutos
       cronDescription: 'Cada 5 minutos',
       timezone: 'UTC'
